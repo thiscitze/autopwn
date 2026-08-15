@@ -216,7 +216,7 @@ got_root() {
 }
 
 out_shows_root() {
-    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|you should be root|root shell|got root|^#\s*$" "$1" 2>/dev/null
+    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|^#\s*$" "$1" 2>/dev/null
 }
 
 run() {
