@@ -124,10 +124,10 @@ run() {
     echo -e "${CYAN}[>] Trying: $1${NC}"
     echo "==== $1 ====" >> $LOGFILE
     if [ "$HAS_TIMEOUT" = "1" ]; then
-        timeout 90 bash -c "$1" 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
+        timeout -k 5 90 bash -c "$1" </dev/null 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
         RC=${PIPESTATUS[0]}
     else
-        bash -c "$1" 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
+        bash -c "$1" </dev/null 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
         RC=${PIPESTATUS[0]}
     fi
     if [ "$(id -u)" = "0" ]; then
