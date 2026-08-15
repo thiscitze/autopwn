@@ -215,8 +215,16 @@ got_root() {
     exit 0
 }
 
+out_has_root_marker() {
+    grep -qiE "root@|^#\s*$" "$1" 2>/dev/null
+}
+out_final_id_is_root() {
+    local last
+    last=$(awk 'NF{n=$0} END{print n}' "$1" 2>/dev/null)
+    echo "$last" | grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b"
+}
 out_shows_root() {
-    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|^#\s*$" "$1" 2>/dev/null
+    out_final_id_is_root "$1" || out_has_root_marker "$1"
 }
 
 run() {
@@ -234,7 +242,7 @@ run() {
             sleep 1; S=$((S+1))
         done
         if kill -0 $PID 2>/dev/null; then
-            if out_shows_root "$OUT"; then
+            if out_has_root_marker "$OUT"; then
                 [ "$QUIET" = "0" ] && echo -e "${YELLOW}    [root shell detected] not killing process group...${NC}"
                 sleep 1
                 wait $PID 2>/dev/null
