@@ -310,7 +310,7 @@ run() {
     else
         rm -f "$OUT"
         echo "$name|FAIL|exit=$RC" >> $SUM
-        echo -e "${YELLOW}[-] root yok (cikis kodu: $RC)${NC}"
+        echo -e "${RED}[-] root yok (cikis kodu: $RC)${NC}"
         echo ""
     fi
 }
