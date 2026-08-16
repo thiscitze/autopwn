@@ -49,9 +49,10 @@ curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh |
 
 1. **Scan** — OS, kernel, architecture, CPU, glibc version, network reachability.
 2. **Enumeration** (`--scan`/`--scan-only`) — read-only checks: `sudo -l`, SUID binaries, capabilities, writable PATH, cron jobs, credentials, container detection, `/etc/passwd`.
-3. **Match** — every exploit gets a smart pre-check (kernel range, glibc requirement, kernel config, service presence). If a condition doesn't match, a `[!]` warning is printed — **but the exploit is still attempted**.
-4. **Exploit** — each attempt runs with a 90s timeout (default; `PackageKit` gets 120s) and is force-killed as a full process group if it hangs (unless a root shell is already detected — then it is left alive).
-5. **Stop on root** — root is accepted if the script's own `id -u` is 0 **or** the script's appended `id` line reports `uid=0`/`euid=0` **or** a real root shell appears (`root@` prompt, bare `#` prompt). Exploit banner text is never trusted — only the script's own verification or an actual root shell counts. The summary marks output-detected root as `[OK?]` for manual verification.
+3. **Misconfig (fast wins, before kernel exploits)** — writable `/etc/passwd`, writable `/etc/sudoers`, sudo `NOPASSWD` GTFOBins, world-writable SUID binaries, `cap_setuid` binaries, docker/lxc group membership, readable `/etc/shadow`, credential scan. Each verifies real root via command output (`uid=0`), never via banner text.
+4. **Match** — every exploit gets a smart pre-check (kernel range, glibc requirement, kernel config, service presence). If a condition doesn't match, a `[!]` warning is printed — **but the exploit is still attempted**.
+5. **Exploit** — each attempt runs with a 90s timeout (default; `PackageKit` gets 120s) and is force-killed as a full process group if it hangs (unless a root shell is already detected — then it is left alive).
+6. **Stop on root** — root is accepted if the script's own `id -u` is 0 **or** the script's appended `id` line reports `uid=0`/`euid=0` **or** a real root shell appears (`root@` prompt, bare `#` prompt). Exploit banner text is never trusted — only the script's own verification or an actual root shell counts. The summary marks output-detected root as `[OK?]` for manual verification.
 
 ## Exploit Collection
 
