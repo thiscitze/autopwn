@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh |
 | Exploit | CVE | Condition checked |
 |---------|-----|-------------------|
 | PwnKit (+ alt POC) | CVE-2021-4034 | `pkexec` present, gcc |
-| Dirty COW | CVE-2016-5195 | kernel < 4.8.3 |
+| Dirty COW | CVE-2016-5195 | kernel < 4.8.3; verifies via `su -c id root` |
 | Dirty Pipe | CVE-2022-0847 | kernel 5.8–5.16 |
 | GameOver(lay) | CVE-2023-2640/32629 | Ubuntu + OverlayFS |
 | nf_tables UAF | CVE-2024-1086 | kernel 5.14–6.6, `CONFIG_NF_TABLES` |
@@ -87,7 +87,7 @@ curl -fsSL https://raw.githubusercontent.com/thiscitze/autopwn/main/autopwn.sh |
 | runc breakout | CVE-2024-21626 | container detected |
 | OVSwrap | — | Open vSwitch loaded |
 | CVE-2026-31431 | — | unverified, always tried |
-| CVE-2026-46300 | — | unverified binary, always tried |
+| CVE-2026-46300 | — | unverified binary, always tried; verifies via `su -c id` |
 | CVE-2026-64600 | — | unverified, always tried |
 | CVE-2026-68138 | — | unverified, always tried |
 | CVE-2026-68398 (gcc + make) | — | unverified, always tried |

